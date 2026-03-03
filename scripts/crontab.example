@@ -1,0 +1,19 @@
+# crontab example for the always-on server that hosts your dev container.
+# Install with:  crontab -e   (paste and ADAPT THE PATHS)
+#
+# cron runs with a minimal environment. Everything the runner needs must be on
+# this PATH: the repo's .venv/bin (ruff/mypy/pytest for `make check`), the npm
+# global bin (codex), and standard system dirs.
+PATH=/path/to/slm-rag-eval/.venv/bin:/usr/local/bin:/usr/bin:/bin:/root/.npm-global/bin
+
+# Optional knobs (uncomment what you use):
+# HOLDOUT_DIR=/root/holdout-slm-rag-eval     # gate 3: tests the agent never sees
+# CLAUDE_REVIEW=1                            # cross-model advisory review via claude -p
+# QUOTA_MAX_PCT=90                           # gate 0: skip new tasks at/above this weekly %
+
+# Option A — steady drip: try the next task every 30 min overnight (22:00–07:59).
+# flock inside run_next_task.sh makes overlapping triggers exit immediately.
+*/30 0-7,22-23 * * * cd /path/to/slm-rag-eval && ./scripts/run_next_task.sh >> logs/cron.log 2>&1
+
+# Option B — one nightly batch that drains the queue (stops at first needs-review):
+# 30 23 * * * cd /path/to/slm-rag-eval && ./scripts/run_all_tasks.sh >> logs/cron.log 2>&1
