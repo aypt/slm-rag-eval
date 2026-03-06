@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,8 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:11434/v1"
     api_key: str | None = None
     model: str = "qwen2.5:7b-instruct"
+    timeout_s: float = Field(default=120.0, gt=0)
+    max_retries: int = Field(default=3, ge=1)
 
 
 def get_settings() -> Settings:

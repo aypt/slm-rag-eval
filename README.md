@@ -15,7 +15,7 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | Task | Scope | State |
 |---|---|---|
 | M00 | Scaffold, CI, test harness | done |
-| M01 | LLM client abstraction (Ollama/vLLM/OpenAI-compatible) | todo |
+| M01 | LLM client abstraction (Ollama/vLLM/OpenAI-compatible) | done |
 | M02 | Faithfulness metric (claims + verification) | todo |
 | M03 | Relevance metric + registry | todo |
 | M04 | Privacy layer (Presidio) | todo |
@@ -40,3 +40,18 @@ make run     # dev server on :8000 (GET /healthz)
 
 Unit tests never touch the network: all judge calls go through the `FakeLLMClient`
 fixture in `tests/conftest.py`.
+
+## Configuring model backends
+
+Model backends are configured with `SLMEVAL_*` environment variables. For a local Ollama
+server exposing its OpenAI-compatible API:
+
+```bash
+export SLMEVAL_BASE_URL=http://localhost:11434/v1
+export SLMEVAL_MODEL=qwen2.5:7b-instruct
+export SLMEVAL_TIMEOUT_S=120
+export SLMEVAL_MAX_RETRIES=3
+```
+
+`SLMEVAL_API_KEY` is optional and should be left unset for an unsecured local Ollama
+server. Set it when the selected OpenAI-compatible backend requires bearer authentication.
