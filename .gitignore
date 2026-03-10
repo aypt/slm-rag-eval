@@ -14,3 +14,4 @@ report/
 logs/
 .agent-stop
 .worktrees/
+.quota-cooldown-until
