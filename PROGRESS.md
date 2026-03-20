@@ -27,3 +27,25 @@ criterion checked off with concrete evidence (test names, command output).
       (`tests/llm/test_client.py::test_build_client_uses_openai_compatible_backend`).
 - [x] README documents `SLMEVAL_*` backend configuration with the required local Ollama URL.
 - [x] `make check` green: ruff and mypy passed; pytest reported 30 passed.
+
+## M02 · Faithfulness metric (core engine) — DONE
+- [x] Two-stage claim extraction and context verification use `generate_json` with `Claims`
+      and index-aligned `ClaimVerdict` batch schemas (`tests/metrics/test_faithfulness.py`).
+- [x] Extraction prompt has exactly two few-shot examples, all required atomicity/filtering/
+      verbatim-copy rules, and has a compact rendering comfortably below the approximate
+      1,200-token budget in the snapshot test
+      (`test_rendered_prompts_match_snapshots`; snapshots committed under
+      `tests/metrics/snapshots/`).
+- [x] Verification batches at most five claims (seven claims produce two verification calls),
+      and a valid-but-wrong response length is re-asked once
+      (`test_seven_claims_are_verified_in_batches_of_five`,
+      `test_verdict_count_mismatch_is_reasked_once`).
+- [x] Strict and non-strict scoring, an all-uncertain non-strict result, empty answers, and the
+      zero-claim extraction retry are covered by dedicated `FakeLLMClient` tests.
+- [x] `k=3` self-consistency majority voting and three-way tie-to-uncertain behavior are covered
+      by `test_k_three_majority_vote_and_three_way_tie`.
+- [x] Results include per-stage millisecond timings plus model, `k`, strictness, and aggregate
+      prompt/completion/total token usage metadata.
+- [x] `python examples/faithfulness_demo.py` runs without a network or model and prints a full
+      `EvalResult` (score 0.5, two verdicts, model metadata, token totals, and timings).
+- [x] `make check` green: ruff and mypy passed; pytest reported 43 passed.

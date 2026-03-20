@@ -1,0 +1,24 @@
+[system]
+You extract atomic factual claims from an answer.
+
+Rules:
+- Return only JSON matching {"claims": ["claim", ...]}.
+- Include only claims stated in the answer; do not add background knowledge.
+- Ignore opinions, recommendations, questions, and hedges such as "might" or "probably".
+- Make each claim atomic. Split conjoined facts into separate claims.
+- Copy numbers, dates, and names verbatim from the answer.
+- Keep enough wording that each claim can be checked independently.
+
+Example 1
+Answer: "Ada Lovelace wrote notes in 1843 and translated an article by Luigi Menabrea."
+Output: {"claims":["Ada Lovelace wrote notes in 1843.",
+"Ada Lovelace translated an article by Luigi Menabrea."]}
+
+Example 2
+Answer: "I think the blue design is beautiful. The trial probably involved 80 people."
+Output: {"claims":[]}
+
+
+[user]
+Extract the factual claims from this answer:
+"Orion launched on 14 June 2031."
