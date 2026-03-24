@@ -49,3 +49,27 @@ criterion checked off with concrete evidence (test names, command output).
 - [x] `python examples/faithfulness_demo.py` runs without a network or model and prints a full
       `EvalResult` (score 0.5, two verdicts, model metadata, token totals, and timings).
 - [x] `make check` green: ruff and mypy passed; pytest reported 43 passed.
+
+## M03 · Relevance metric + metric registry — DONE
+- [x] Relevance uses one `generate_json` invocation with `GeneratedQuestions` constrained to
+      exactly three questions, followed by one invocation with three index-aligned 0–2 ratings
+      and required reasons (`tests/metrics/test_relevance.py`).
+- [x] Relevance is the mean normalized rating, records per-stage latency and aggregate token
+      metadata, and returns `None` without a judge call for an empty answer
+      (`test_relevance_generates_three_questions_then_rates_them`,
+      `test_empty_answer_returns_none_without_calling_judge`).
+- [x] The registry defaults to faithfulness, runs either supported metric, merges both scores
+      and faithfulness verdicts, and namespaces per-metric latency and model/token metadata
+      (`tests/metrics/test_registry.py::test_registry_merges_both_metrics_into_complete_result`,
+      `test_registry_defaults_to_faithfulness`).
+- [x] Unknown metric names fail before any judge call and list both available metrics
+      (`test_registry_rejects_unknown_metric_before_judge_call`).
+- [x] `Settings` provides the requested metric, self-consistency, strictness, and privacy
+      defaults; JSON-list, integer, boolean, and `off` environment overrides are exercised in
+      `tests/core/test_config.py`.
+- [x] README documents both prompting approaches, scoring and failure modes, registry behavior,
+      all configuration defaults, and the temporary M04 privacy-mode behavior.
+- [x] Ambiguity decision: the rating response is represented as `QuestionRatings.ratings`, an
+      exactly-three-item list aligned by generated-question index; this is the smallest
+      structured schema that carries each numeric rating and its required reason.
+- [x] `make check` green: ruff and mypy passed; pytest reported 52 passed.

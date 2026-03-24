@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,6 +18,12 @@ class Settings(BaseSettings):
     model: str = "qwen2.5:7b-instruct"
     timeout_s: float = Field(default=120.0, gt=0)
     max_retries: int = Field(default=3, ge=1)
+    enabled_metrics: list[str] = Field(default_factory=lambda: ["faithfulness"])
+    k: int = Field(default=1, ge=1)
+    strict: bool = True
+    # TODO(M04): apply masking before judge calls and persistence. Until then both modes
+    # are accepted configuration values and intentionally follow the same code path.
+    privacy_mode: Literal["mask", "off"] = "mask"
 
 
 def get_settings() -> Settings:
