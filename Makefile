@@ -2,6 +2,7 @@
 
 setup:
 	pip install -e ".[dev]"
+	python -m spacy download en_core_web_lg
 
 lint:
 	ruff check src tests

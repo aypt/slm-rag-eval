@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from time import perf_counter
+from typing import Protocol
 
+from slm_rag_eval.core.config import Settings, get_settings
 from slm_rag_eval.core.schemas import EvalRequest, EvalResult
 from slm_rag_eval.llm.client import LLMClient
 from slm_rag_eval.metrics.faithfulness import score_faithfulness
 from slm_rag_eval.metrics.relevance import score_relevance
+from slm_rag_eval.privacy.sanitizer import SanitizedBatch, Sanitizer
+
+
+class RequestSanitizer(Protocol):
+    """Injectable masking boundary used by tests and alternate detectors."""
+
+    def sanitize(self, texts: list[str]) -> SanitizedBatch: ...
+
+    def restore(self, text: str, mapping: dict[str, str]) -> str: ...
 
 
 async def _faithfulness_runner(
@@ -27,6 +39,39 @@ async def _relevance_runner(request: EvalRequest, judge: LLMClient) -> EvalResul
 _AVAILABLE_METRICS = ("faithfulness", "relevance")
 
 
+@lru_cache(maxsize=8)
+def _default_sanitizer(entities: tuple[str, ...], score_threshold: float) -> Sanitizer:
+    return Sanitizer(entities=entities, score_threshold=score_threshold)
+
+
+def _sanitize_request(
+    request: EvalRequest,
+    sanitizer: RequestSanitizer,
+) -> tuple[EvalRequest, dict[str, str]]:
+    batch = sanitizer.sanitize([request.question, request.answer, *request.contexts])
+    expected_count = len(request.contexts) + 2
+    if len(batch.texts) != expected_count:
+        raise ValueError(
+            f"Sanitizer returned {len(batch.texts)} texts for {expected_count} request fields"
+        )
+    sanitized_request = EvalRequest(
+        question=batch.texts[0],
+        answer=batch.texts[1],
+        contexts=batch.texts[2:],
+    )
+    return sanitized_request, batch.mapping
+
+
+def _restore_verdicts(
+    result: EvalResult,
+    sanitizer: RequestSanitizer,
+    mapping: dict[str, str],
+) -> None:
+    for verdict in result.verdicts:
+        verdict.claim = sanitizer.restore(verdict.claim, mapping)
+        verdict.reason = sanitizer.restore(verdict.reason, mapping)
+
+
 async def evaluate(
     request: EvalRequest,
     *,
@@ -34,8 +79,10 @@ async def evaluate(
     metrics: list[str] | None = None,
     k: int = 1,
     strict: bool = True,
+    settings: Settings | None = None,
+    sanitizer: RequestSanitizer | None = None,
 ) -> EvalResult:
-    """Run selected metrics and merge their scores and metadata."""
+    """Mask a request, run selected metrics, and merge their scores and metadata."""
     selected = metrics if metrics is not None else ["faithfulness"]
     unknown = sorted(set(selected) - set(_AVAILABLE_METRICS))
     if unknown:
@@ -44,13 +91,25 @@ async def evaluate(
             f"Unknown metric(s): {', '.join(unknown)}. Available metrics: {available}"
         )
 
+    runtime_settings = settings if settings is not None else get_settings()
+    mapping: dict[str, str] = {}
+    active_sanitizer = sanitizer
+    judge_request = request
+    if runtime_settings.privacy_mode == "mask":
+        if active_sanitizer is None:
+            active_sanitizer = _default_sanitizer(
+                tuple(runtime_settings.privacy_entities),
+                runtime_settings.privacy_score_threshold,
+            )
+        judge_request, mapping = _sanitize_request(request, active_sanitizer)
+
     merged = EvalResult()
     for metric_name in dict.fromkeys(selected):
         started = perf_counter()
         if metric_name == "faithfulness":
-            result = await _faithfulness_runner(request, judge, k=k, strict=strict)
+            result = await _faithfulness_runner(judge_request, judge, k=k, strict=strict)
         else:
-            result = await _relevance_runner(request, judge)
+            result = await _relevance_runner(judge_request, judge)
         latency_ms = (perf_counter() - started) * 1000
 
         if metric_name == "faithfulness":
@@ -61,4 +120,6 @@ async def evaluate(
         merged.timings[f"{metric_name}_ms"] = latency_ms
         merged.model_info[metric_name] = result.model_info
 
+    if mapping and active_sanitizer is not None:
+        _restore_verdicts(merged, active_sanitizer, mapping)
     return merged

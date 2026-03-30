@@ -1,4 +1,4 @@
-"""Runtime configuration. Extended by tasks M01 (backend), M03 (metrics), M05 (service)."""
+"""Runtime configuration for model, metric, privacy, and service behavior."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from slm_rag_eval.privacy.sanitizer import DEFAULT_ENTITIES
 
 
 class Settings(BaseSettings):
@@ -21,9 +23,9 @@ class Settings(BaseSettings):
     enabled_metrics: list[str] = Field(default_factory=lambda: ["faithfulness"])
     k: int = Field(default=1, ge=1)
     strict: bool = True
-    # TODO(M04): apply masking before judge calls and persistence. Until then both modes
-    # are accepted configuration values and intentionally follow the same code path.
     privacy_mode: Literal["mask", "off"] = "mask"
+    privacy_entities: list[str] = Field(default_factory=lambda: list(DEFAULT_ENTITIES))
+    privacy_score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
 
 
 def get_settings() -> Settings:
