@@ -77,7 +77,10 @@ fail the run. Therefore:
 8. Never commit secrets. `.env` is gitignored; use `.env.example` for documentation.
 
 ## Git hygiene
-- Small commits with imperative messages ("Add faithfulness batch verification").
+- Small commits, Conventional Commits format, subject in the imperative and starting
+  with a **lowercase** letter: `type(scope): summary`
+  (e.g. `feat(metrics): add faithfulness batch verification`).
+  Types in use: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`.
 - **Never `git add -A` or `git add .`** — stage only the files you intentionally
   changed, by name.
 - Keep `.gitignore` complete; never commit caches, artifacts, virtualenvs, or data.
