@@ -19,7 +19,7 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | M02 | Faithfulness metric (claims + verification) | done |
 | M03 | Relevance metric + registry | done |
 | M04 | Privacy layer (Presidio) | done |
-| M05 | FastAPI service + async worker + DB | todo |
+| M05 | FastAPI service + async worker + DB | done |
 | M06 | Dockerfile + docker-compose | todo |
 | M07 | Benchmark harness (RAGTruth / HaluEval) | todo |
 | M08 | Analysis + figures | todo |
@@ -95,6 +95,52 @@ The defaults detect `PERSON`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `I
 `SLMEVAL_PRIVACY_ENTITIES` (a JSON list of Presidio entity names) and
 `SLMEVAL_PRIVACY_SCORE_THRESHOLD` (from `0.0` to `1.0`). A lower threshold favors recall and
 may mask more non-PII text; a higher threshold favors precision and may miss more PII.
+
+## Run the service
+
+`make run` serves the API on :8000 with the worker embedded in the same process. Submitting
+returns immediately with a job id; the worker evaluates in the background.
+
+```bash
+make run   # in another terminal
+
+curl -s localhost:8000/healthz
+# {"status":"ok"}
+
+JOB=$(curl -s -X POST localhost:8000/v1/evaluations \
+  -H 'content-type: application/json' \
+  -d '{"question":"Which material shields the module?",
+       "answer":"The module uses a ceramic shield.",
+       "contexts":["The module is protected by a ceramic shield."],
+       "options":{"metrics":["faithfulness","relevance"]}}' \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')
+
+curl -s localhost:8000/v1/evaluations/$JOB
+# {"job_id":"...","status":"done","result":{"faithfulness":1.0,...},"error":null}
+```
+
+`options` is optional; anything omitted falls back to the `SLMEVAL_*` defaults. Status moves
+`queued → running → done | error`; a job whose judge call fails twice ends as `error` with the
+message. An unknown job id returns 404.
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | `sqlite+aiosqlite:///data/jobs.db` | Job store; point it at Postgres in production |
+| `WORKER_EMBEDDED` | `1` | Run the worker inside the API process |
+| `WORKER_CONCURRENCY` | `2` | Jobs evaluated in parallel per worker |
+
+Set `WORKER_EMBEDDED=0` and run the worker as its own process when you want to scale it
+separately:
+
+```bash
+python -m slm_rag_eval.service.worker
+```
+
+**Privacy at rest:** with `SLMEVAL_PRIVACY_MODE=mask` the request is sanitized at the API
+boundary, *before* the job row is written — so the database, the judge prompts, and the stored
+result all hold placeholders rather than PII. The placeholder mapping is never persisted, which
+means results served by the API stay masked; use the in-process pipeline (or the CLI) when you
+need de-anonymized display text.
 
 ## Configuring model backends
 

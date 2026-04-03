@@ -44,6 +44,30 @@ def _default_sanitizer(entities: tuple[str, ...], score_threshold: float) -> San
     return Sanitizer(entities=entities, score_threshold=score_threshold)
 
 
+def build_sanitizer(settings: Settings) -> Sanitizer:
+    """Return the shared detector for these settings (cached: the model load is expensive)."""
+    return _default_sanitizer(
+        tuple(settings.privacy_entities),
+        settings.privacy_score_threshold,
+    )
+
+
+def sanitize_for_judge(
+    request: EvalRequest,
+    *,
+    settings: Settings,
+    sanitizer: RequestSanitizer | None = None,
+) -> tuple[EvalRequest, dict[str, str]]:
+    """Mask a request the way `evaluate` would, for callers that must persist the masked form.
+
+    Returns the request as the judge will see it plus the placeholder mapping. The mapping is
+    in-memory only: callers must never log or persist it (AGENTS.md rule 2).
+    """
+    if settings.privacy_mode != "mask":
+        return request, {}
+    return _sanitize_request(request, sanitizer or build_sanitizer(settings))
+
+
 def _sanitize_request(
     request: EvalRequest,
     sanitizer: RequestSanitizer,
@@ -92,16 +116,14 @@ async def evaluate(
         )
 
     runtime_settings = settings if settings is not None else get_settings()
-    mapping: dict[str, str] = {}
     active_sanitizer = sanitizer
-    judge_request = request
-    if runtime_settings.privacy_mode == "mask":
-        if active_sanitizer is None:
-            active_sanitizer = _default_sanitizer(
-                tuple(runtime_settings.privacy_entities),
-                runtime_settings.privacy_score_threshold,
-            )
-        judge_request, mapping = _sanitize_request(request, active_sanitizer)
+    if runtime_settings.privacy_mode == "mask" and active_sanitizer is None:
+        active_sanitizer = build_sanitizer(runtime_settings)
+    judge_request, mapping = sanitize_for_judge(
+        request,
+        settings=runtime_settings,
+        sanitizer=active_sanitizer,
+    )
 
     merged = EvalResult()
     for metric_name in dict.fromkeys(selected):

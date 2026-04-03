@@ -143,3 +143,50 @@ sanitized request is not visible to callers. M05 requirement 4 ("persist the san
 never the raw one") therefore needs `evaluate` to also hand back the masked `EvalRequest` it sent
 to the judge — extend the return or accept a pre-sanitized request; do not re-run the detector a
 second time in the worker, and never persist the placeholder mapping.
+
+## M05 · API service + async worker + persistence — DONE
+- [x] `POST /v1/evaluations` accepts an `EvalRequest` plus `options{metrics,k,strict,privacy_mode}`,
+      creates a queued `Job`, and returns 202 `{job_id, status:"queued"}`; `GET
+      /v1/evaluations/{job_id}` returns status with `result`/`error`, and 404 for an unknown id
+      (`tests/service/test_evaluations_api.py::test_submit_then_embedded_worker_completes_the_job`,
+      `test_submitted_options_override_settings_defaults`, `test_unknown_job_returns_404`).
+      `GET /healthz` is unchanged (`tests/service/test_api.py::test_healthz`).
+- [x] `service/db.py` maps `Job{id,status,request_json,result_json,error,created_at,updated_at}`
+      with SQLAlchemy 2 async; `create_engine` makes the SQLite parent directory, `DATABASE_URL`
+      overrides the `sqlite+aiosqlite:///data/jobs.db` default (Postgres-ready), and tables are
+      created in the app lifespan.
+- [x] Job claiming is a conditional `UPDATE ... WHERE status='queued'` whose `rowcount` decides
+      the winner — no `SELECT FOR UPDATE`, so it is correct for single-writer SQLite and for
+      Postgres (`test_queued_job_is_claimed_exactly_once`).
+- [x] The worker runs jobs under an `asyncio.Semaphore(WORKER_CONCURRENCY, default 2)`, retries a
+      failed job exactly once and then stores the message with status `error`
+      (`test_failing_judge_marks_the_job_error_after_one_retry` asserts the judge saw exactly two
+      attempts). It runs embedded via lifespan when `WORKER_EMBEDDED=1` (default) or standalone
+      via `python -m slm_rag_eval.service.worker`.
+- [x] Privacy at rest: masking happens at the API boundary before the row is written, so the job
+      row, the judge prompts, and the stored result are all placeholder-only
+      (`tests/service/test_privacy_at_rest.py::test_privacy_invariant_no_pii_is_persisted_or_sent`,
+      which must never be weakened). `privacy_mode="off"` stores the submission unchanged
+      (`test_privacy_mode_off_persists_the_request_unchanged`).
+- [x] `registry.sanitize_for_judge` exposes the masked request that `evaluate` would send, which
+      is what lets the API persist the sanitized form without running the detector twice — the
+      open TODO recorded in the M04 section is now closed.
+- [x] Tests drive the app through `httpx.ASGITransport` with the lifespan running, the judge
+      injected via `create_app(judge_factory=...)`, and a bounded poll loop
+      (`tests/service/factories.py`); no test touches the network or a real model.
+- [x] Live check of the DoD: `make run`, then `curl /healthz` → `{"status":"ok"}`;
+      `POST /v1/evaluations` → 202 with a job id; `GET` → settled job; unknown id → 404. With the
+      default `privacy_mode="mask"` and real Presidio, the persisted `request_json` read straight
+      out of `data/jobs.db` was `"<PERSON_1> filed the ticket from <EMAIL_ADDRESS_1>."` with no raw
+      value anywhere in the row. (The job itself ended `error: All connection attempts failed`,
+      which is correct: no Ollama judge is running in this container.)
+- [x] Ambiguity decisions (AGENTS.md rule 7): (a) the spec's `Job` column list has no options
+      column, so the resolved options are stored inside `request_json` as
+      `{"request": ..., "options": ...}`; (b) the worker evaluates the already-masked stored
+      request with `privacy_mode="off"` rather than masking a second time — re-running the
+      detector over text that already contains `<PERSON_1>` placeholders risks corrupting them,
+      and the boundary has already been applied.
+- [x] `make check` green: ruff and mypy passed (24 source files); pytest reported 67 passed.
+
+Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates it and must cover
+`DATABASE_URL`, `WORKER_EMBEDDED`, and `WORKER_CONCURRENCY` alongside the `SLMEVAL_*` settings.
