@@ -20,7 +20,7 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | M03 | Relevance metric + registry | done |
 | M04 | Privacy layer (Presidio) | done |
 | M05 | FastAPI service + async worker + DB | done |
-| M06 | Dockerfile + docker-compose | todo |
+| M06 | Dockerfile + docker-compose | done |
 | M07 | Benchmark harness (RAGTruth / HaluEval) | todo |
 | M08 | Analysis + figures | todo |
 | M09 | CLI + Streamlit demo | todo |
@@ -141,6 +141,39 @@ boundary, *before* the job row is written — so the database, the judge prompts
 result all hold placeholders rather than PII. The placeholder mapping is never persisted, which
 means results served by the API stay masked; use the in-process pipeline (or the CLI) when you
 need de-anonymized display text.
+
+## Run with Docker
+
+From a clean checkout to a scored answer, with the judge, the database, and the worker all
+in containers:
+
+```bash
+cp .env.example .env          # edit SLMEVAL_MODEL / JUDGE_MODEL if you want another judge
+make docker-build             # multi-stage build; the spaCy model is baked into the image
+make docker-up                # api, worker, postgres, ollama, and a one-shot model pull
+make docker-logs              # follow api + worker; ollama-init exits once the pull is done
+
+# the first `ollama pull` downloads several GB — wait for it before submitting
+curl -s localhost:8000/healthz
+
+JOB=$(curl -s -X POST localhost:8000/v1/evaluations \
+  -H 'content-type: application/json' \
+  -d '{"question":"Which material shields the module?",
+       "answer":"The module uses a ceramic shield.",
+       "contexts":["The module is protected by a ceramic shield."]}' \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')
+
+curl -s localhost:8000/v1/evaluations/$JOB
+make docker-down              # stop everything; named volumes keep the model and the data
+```
+
+The `api` service sets `WORKER_EMBEDDED=0` and the `worker` service runs
+`python -m slm_rag_eval.service.worker`, so they scale independently. `db` is `postgres:16`
+behind a `pg_isready` healthcheck and both app services wait for it. `ollama-init` pulls
+`JUDGE_MODEL` once and exits. To give the judge a GPU, uncomment the `deploy.resources`
+block on the `ollama` service (needs the NVIDIA container toolkit on the host).
+
+Unit tests never need Docker: `make check` runs entirely in-process.
 
 ## Configuring model backends
 

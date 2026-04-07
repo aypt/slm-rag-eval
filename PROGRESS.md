@@ -190,3 +190,39 @@ second time in the worker, and never persist the placeholder mapping.
 
 Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates it and must cover
 `DATABASE_URL`, `WORKER_EMBEDDED`, and `WORKER_CONCURRENCY` alongside the `SLMEVAL_*` settings.
+
+## M06 · Containerization (Dockerfile + docker-compose) — DONE
+- [x] Multi-stage `Dockerfile` on `python:3.11-slim`: the builder installs `.[postgres]` plus
+      `en_core_web_lg`, and the runtime stage copies only `site-packages` and `/usr/local/bin`,
+      so `build-essential` never reaches the runtime image. It runs as the non-root `slmeval`
+      user and HEALTHCHECKs `/healthz` with `urllib` instead of adding `curl`
+      (`tests/deploy/test_deployment_config.py::test_dockerfile_is_multi_stage_slim_non_root_and_healthchecked`).
+- [x] `docker-compose.yml` defines `api` (`WORKER_EMBEDDED=0`, port 8000), `worker`
+      (`python -m slm_rag_eval.service.worker`), `db` (`postgres:16`, named volume,
+      `pg_isready` healthcheck, both app services waiting on `service_healthy`), `ollama`
+      (named model volume, commented GPU `deploy.resources.reservations.devices` block), and
+      the one-shot `ollama-init` that pulls `JUDGE_MODEL` and exits
+      (`test_compose_defines_the_full_stack`, `test_api_serves_http_while_the_worker_runs_separately`,
+      `test_database_is_postgres_with_a_readiness_check_and_named_volume`,
+      `test_ollama_init_pulls_the_configured_judge_model`,
+      `test_gpu_reservation_block_is_present_but_commented_out`).
+- [x] `.env.example` documents every setting; `test_env_example_documents_every_setting` derives
+      the expected variable names from `Settings.model_fields` (including the aliased
+      `DATABASE_URL`, `WORKER_EMBEDDED`, `WORKER_CONCURRENCY`) plus `JUDGE_MODEL`, so the file
+      cannot silently drift from the model. This closes the open TODO left by M05.
+- [x] Make targets `docker-build`, `docker-up`, `docker-down`, `docker-logs` added; the
+      `check`/`lint`/`type`/`test` targets are untouched.
+- [x] CI gains a `docker` job that runs `docker build` and, after `cp .env.example .env`,
+      `docker compose config --quiet`. Build only — no compose run, since CI has no judge model.
+- [x] New runtime extra `[postgres]` (`asyncpg`) because the compose `DATABASE_URL` is
+      `postgresql+asyncpg://…`; a plain local install stays SQLite-only. `pyyaml` added to
+      `[dev]` for the compose tests.
+- [x] `.dockerignore` keeps the 900 MB `.venv`, caches, logs, and `data/` out of the build
+      context.
+- [x] Constraint honored: unit tests never need Docker — the deployment tests parse
+      `docker-compose.yml` and the `Dockerfile` directly.
+- [x] Not verified here, and deliberately not claimed: `docker build` and `docker compose config`
+      could not be run in this dev container, which has no docker CLI and no
+      `/var/run/docker.sock` (`which docker` → not found). The spec allows this; CI's `docker` job
+      is what actually executes both, and the structural tests above are the local stand-in.
+- [x] `make check` green: ruff and mypy passed (24 source files); pytest reported 74 passed.

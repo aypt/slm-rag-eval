@@ -1,0 +1,75 @@
+services:
+  api:
+    build: .
+    image: slm-rag-eval:latest
+    env_file: .env
+    environment:
+      # The API only serves HTTP here; the worker runs as its own service below.
+      WORKER_EMBEDDED: "0"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: slm-rag-eval:latest
+    env_file: .env
+    command: ["python", "-m", "slm_rag_eval.service.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: slmeval
+      POSTGRES_PASSWORD: slmeval
+      POSTGRES_DB: slmeval
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slmeval -d slmeval"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    # Uncomment to give the judge a GPU (needs the NVIDIA container toolkit on the host).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  ollama-init:
+    image: ollama/ollama
+    env_file: .env
+    depends_on:
+      ollama:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull "$${JUDGE_MODEL}"']
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+volumes:
+  pgdata:
+  ollama:

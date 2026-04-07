@@ -17,3 +17,13 @@ jobs:
       # en_core_web_lg model at import time, not just the Presidio packages.
       - run: make setup
       - run: make check
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build only: compose needs a judge model and a database, which CI does not run.
+      - run: docker build --tag slm-rag-eval:ci .
+      # compose reads `env_file: .env`, which is gitignored; the example is its template.
+      - run: cp .env.example .env
+      - run: docker compose config --quiet

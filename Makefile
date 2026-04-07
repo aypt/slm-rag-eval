@@ -1,4 +1,5 @@
-.PHONY: setup lint type test check run next-task all-tasks
+.PHONY: setup lint type test check run docker-build docker-up docker-down docker-logs \
+	next-task all-tasks
 
 setup:
 	pip install -e ".[dev]"
@@ -17,6 +18,18 @@ check: lint type test
 
 run:
 	uvicorn slm_rag_eval.service.api:app --reload --host 0.0.0.0 --port 8000
+
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f api worker
 
 next-task:
 	bash scripts/run_next_task.sh
