@@ -1,0 +1,3 @@
+{"source_id": "s1", "task_type": "QA", "source": "SyntheticSearch", "prompt": "Answer using the passages.", "source_info": {"question": "Which alloy shields the probe?", "passages": "passage 1:The probe is shielded by a titanium alloy. passage 2:The alloy was chosen for its heat tolerance."}}
+{"source_id": "s2", "task_type": "Summary", "source": "SyntheticNews", "prompt": "Summarize the article.", "source_info": "The observatory recorded three tremors on Tuesday. No damage was reported."}
+{"source_id": "s3", "task_type": "Data2txt", "source": "SyntheticDirectory", "prompt": "Describe the venue.", "source_info": {"name": "Blue Harbour Cafe", "city": "Northport", "stars": 4.5}}

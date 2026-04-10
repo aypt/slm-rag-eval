@@ -21,7 +21,7 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | M04 | Privacy layer (Presidio) | done |
 | M05 | FastAPI service + async worker + DB | done |
 | M06 | Dockerfile + docker-compose | done |
-| M07 | Benchmark harness (RAGTruth / HaluEval) | todo |
+| M07 | Benchmark harness (RAGTruth / HaluEval) | done |
 | M08 | Analysis + figures | todo |
 | M09 | CLI + Streamlit demo | todo |
 | M10 | Docs, hardening, reproducibility | todo |
@@ -174,6 +174,61 @@ behind a `pg_isready` healthcheck and both app services wait for it. `ollama-ini
 block on the `ollama` service (needs the NVIDIA container toolkit on the host).
 
 Unit tests never need Docker: `make check` runs entirely in-process.
+
+## Benchmarks
+
+The harness scores a human-labeled dataset with one judge and writes JSONL rows that M08
+turns into a report.
+
+```bash
+python scripts/download_ragtruth.py     # -> data/ragtruth/ (gitignored)
+python scripts/download_halueval.py     # -> data/halueval/
+
+python -m slm_rag_eval.bench.run --dataset ragtruth --judge slm --limit 200 --out results/
+python -m slm_rag_eval.bench.run --help
+```
+
+Each run writes `results/<dataset>_<judge>.jsonl` (one row per sample) and
+`results/<dataset>_<judge>.manifest.json` (parameters, git sha, UTC timestamp, failure
+count). Runs are **resumable**: rerunning the same dataset/judge pair skips sample ids
+already present in the rows file, so an interrupted 200-sample run continues where it
+stopped. A sample that raises is logged, counted in the manifest, and skipped — one bad
+sample never ends a run. `--privacy-mode` overrides the configured masking mode for the run.
+
+The loaders never touch the network: they read the cached files and raise a clear error
+naming the download script when the cache is missing.
+
+### SLM vs cloud comparison
+
+```bash
+# local judge — the one that keeps data in-house
+python -m slm_rag_eval.bench.run --dataset ragtruth --judge slm --limit 200 --out results/
+
+# cloud baseline for the same samples
+export CLOUD_BASE_URL=https://api.example.com/v1
+export CLOUD_MODEL=<model>
+export CLOUD_API_KEY=<key>
+python -m slm_rag_eval.bench.run --dataset ragtruth --judge cloud --limit 200 --out results/
+```
+
+> ⚠️ **The cloud judge is for PUBLIC benchmark data only.** Never point it at private or
+> production data. Keeping sensitive retrieved contexts away from third-party APIs is the
+> entire point of this project; the cloud judge exists only to produce a comparison baseline
+> on already-public datasets.
+
+### Datasets, licenses, citations
+
+- **RAGTruth** (primary) — <https://github.com/ParticleMedia/RAGTruth>, MIT License,
+  © 2023 Particle Media. Response-level label: a response counts as hallucinated when it
+  carries at least one annotated span. Niu et al., *RAGTruth: A Hallucination Corpus for
+  Developing Trustworthy Retrieval-Augmented Language Models*, ACL 2024.
+- **HaluEval** (secondary, QA subset) — <https://github.com/RUCAIBox/HaluEval>, MIT License,
+  © 2020 RUCAIBox. Each source row yields two samples, the correct answer (not hallucinated)
+  and the hallucinated answer. Li et al., *HaluEval: A Large-Scale Hallucination Evaluation
+  Benchmark for Large Language Models*, EMNLP 2023.
+
+Downloaded data stays in `data/` and is gitignored; nothing from either dataset is committed
+to this repository, and the test fixtures under `tests/data/` are entirely synthetic.
 
 ## Configuring model backends
 

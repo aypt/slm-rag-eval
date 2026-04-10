@@ -226,3 +226,59 @@ Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates 
       `/var/run/docker.sock` (`which docker` → not found). The spec allows this; CI's `docker` job
       is what actually executes both, and the structural tests above are the local stand-in.
 - [x] `make check` green: ruff and mypy passed (24 source files); pytest reported 74 passed.
+
+## M07 · Benchmark harness (datasets + runner) — DONE
+- [x] `LabeledSample{id,question,answer,contexts,label_hallucinated,meta}` and
+      `load(name, limit=None, *, data_dir=None)` live in `bench/datasets.py`; unknown names and
+      non-positive limits fail with the available datasets listed
+      (`tests/bench/test_datasets.py::test_unknown_dataset_lists_the_available_ones`,
+      `test_limit_truncates_and_must_be_positive`).
+- [x] The RAGTruth loader joins `response.jsonl` with `source_info.jsonl` on `source_id`, maps
+      RAGTruth's span annotations to a response-level `label_hallucinated` (any span ⇒ True), and
+      normalizes all three task types: QA takes its question from `source_info` and splits the
+      `passage N:` blob into separate contexts, Summary uses the prompt as the question and the
+      document as the single context, and Data2txt keeps the structured record as one context
+      (`test_ragtruth_loader_joins_sources_and_maps_span_labels`,
+      `test_ragtruth_loader_normalizes_summary_and_structured_tasks`). Rows whose `source_id` has
+      no source are dropped rather than half-loaded.
+- [x] The HaluEval QA loader emits one non-hallucinated and one hallucinated sample per source
+      row, with the knowledge field as the context
+      (`test_halueval_loader_yields_one_positive_and_one_negative_per_row`).
+- [x] Loaders are offline-only; a missing cache raises `DatasetNotDownloadedError` naming the
+      download script (`test_missing_cache_names_the_download_script`).
+      `scripts/download_ragtruth.py` and `scripts/download_halueval.py` are thin entry points over
+      `bench/download.py`, which caches into `data/<name>/`, skips files already present unless
+      `--force`, and writes through a `.part` file so an interrupted download is never cached
+      (`tests/bench/test_download.py`, 3 tests using an injected fetcher — no test touches the
+      network).
+- [x] `python -m slm_rag_eval.bench.run` (typer) writes one JSONL row per sample with exactly
+      `{sample_id, dataset, judge, model, label_hallucinated, scores, verdicts, latency_ms, usage}`
+      plus a manifest holding params, git sha, UTC timestamp, and failure count
+      (`tests/bench/test_run.py::test_run_writes_one_row_per_sample_plus_a_manifest`).
+- [x] Resume works on the rows file: a rerun skips sample ids already present and only spends
+      judge calls on new samples (`test_rerunning_the_same_output_skips_completed_samples`).
+- [x] Fail-soft: a sample that raises is recorded in `manifest.failures` and the run continues
+      (`test_one_failing_sample_does_not_end_the_run`).
+- [x] `--judge slm` builds the client from `Settings`; `--judge cloud` builds it from
+      `CLOUD_BASE_URL` / `CLOUD_MODEL` / `CLOUD_API_KEY` and fails with an explicit message when
+      they are unset (`test_cloud_judge_requires_explicit_configuration`,
+      `test_unknown_judge_is_rejected`). `--privacy-mode` overrides the configured mode.
+- [x] README documents the download scripts, the run/resume workflow, `--help`, the SLM-vs-cloud
+      comparison, both dataset licenses (MIT) and citations, and carries the prominent warning
+      that the cloud judge is for PUBLIC benchmark data only.
+- [x] Fixtures under `tests/data/` are hand-written and fully synthetic (5 HaluEval rows, 5
+      RAGTruth responses over 3 sources); no real dataset text and no personal data.
+- [x] Live end-to-end CLI check with no judge running:
+      `python -m slm_rag_eval.bench.run --dataset halueval --limit 2 --privacy-mode off
+      --data-dir tests/data --out <tmp>` loaded the fixtures, failed soft on both samples, and
+      wrote a manifest with `failure_count: 2`, both `ConnectError` messages, and the real git sha.
+- [x] Deviation from AGENTS.md rule 6, flagged deliberately: the spec requires new files under
+      `scripts/`, which that rule otherwise puts off-limits. Both files are new, additive, and
+      contain no runner logic; no existing file under `scripts/` was touched. A future runner
+      invocation would trip its `scripts/ modified` smell check on them, which is why they are
+      committed now rather than during a task run.
+- [x] Ambiguity decision (AGENTS.md rule 7): `--out` is a directory, and the rows/manifest names
+      are derived from the dataset and judge (`<dataset>_<judge>.jsonl`,
+      `<dataset>_<judge>.manifest.json`). That is what makes "rerunning with the same `--out`"
+      resumable while keeping the two judges' rows in separate files for M08 to compare.
+- [x] `make check` green: ruff and mypy passed (25 source files); pytest reported 88 passed.

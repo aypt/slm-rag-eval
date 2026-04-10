@@ -1,0 +1,5 @@
+{"knowledge": "The Northport observatory opened in 1971. It houses a single refracting telescope.", "question": "When did the Northport observatory open?", "right_answer": "It opened in 1971.", "hallucinated_answer": "It opened in 1948."}
+{"knowledge": "Blue Harbour Cafe serves breakfast only on weekends.", "question": "When does Blue Harbour Cafe serve breakfast?", "right_answer": "Only on weekends.", "hallucinated_answer": "Every morning of the week."}
+{"knowledge": "The probe carries three instruments and a titanium shield.", "question": "How many instruments does the probe carry?", "right_answer": "Three instruments.", "hallucinated_answer": "Seven instruments."}
+{"knowledge": "Tremors were recorded on Tuesday; no damage was reported.", "question": "Was any damage reported?", "right_answer": "No damage was reported.", "hallucinated_answer": "Two buildings collapsed."}
+{"knowledge": "The alloy was chosen for its heat tolerance.", "question": "Why was the alloy chosen?", "right_answer": "For its heat tolerance.", "hallucinated_answer": "Because it was the cheapest option."}

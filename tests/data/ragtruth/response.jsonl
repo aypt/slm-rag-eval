@@ -1,0 +1,5 @@
+{"id": "r1", "source_id": "s1", "model": "synthetic-judge-a", "temperature": 0.7, "labels": [], "split": "test", "quality": "good", "response": "The probe is shielded by a titanium alloy."}
+{"id": "r2", "source_id": "s1", "model": "synthetic-judge-b", "temperature": 0.7, "labels": [{"start": 0, "end": 8, "label_type": "Evident Conflict"}], "split": "test", "quality": "good", "response": "The probe is shielded by a copper alloy."}
+{"id": "r3", "source_id": "s2", "model": "synthetic-judge-a", "temperature": 0.7, "labels": [], "split": "test", "quality": "good", "response": "Three tremors were recorded on Tuesday with no damage."}
+{"id": "r4", "source_id": "s3", "model": "synthetic-judge-b", "temperature": 0.7, "labels": [{"start": 4, "end": 11, "label_type": "Baseless Info"}], "split": "test", "quality": "good", "response": "Blue Harbour Cafe in Southport has a five-star rating."}
+{"id": "r5", "source_id": "missing-source", "model": "synthetic-judge-a", "temperature": 0.7, "labels": [], "split": "test", "quality": "good", "response": "This row references a source that is not present."}

@@ -8,9 +8,11 @@ __pycache__/
 build/
 dist/
 .env
-data/
-results/
-report/
+# Anchored to the repo root: the dataset cache and run outputs live there, while the
+# synthetic fixtures under tests/data/ are committed on purpose.
+/data/
+/results/
+/report/
 logs/
 .agent-stop
 .worktrees/
