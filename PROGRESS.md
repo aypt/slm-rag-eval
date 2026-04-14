@@ -282,3 +282,41 @@ Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates 
       `<dataset>_<judge>.manifest.json`). That is what makes "rerunning with the same `--out`"
       resumable while keeping the two judges' rows in separate files for M08 to compare.
 - [x] `make check` green: ruff and mypy passed (25 source files); pytest reported 88 passed.
+
+## M08 · Benchmark analysis + figures — DONE
+- [x] Detection quality per judge: `predicted_hallucinated := faithfulness < t` swept over
+      `[0,1]` in 0.05 steps (21 thresholds) with precision, recall, F1, and balanced accuracy at
+      each step, plus threshold-independent ROC-AUC computed on the negated score (lower
+      faithfulness ⇒ more likely hallucinated). Best-F1 threshold is reported per judge, ties
+      resolved to the lower threshold
+      (`tests/bench/test_analyze.py::test_slm_sweep_matches_hand_computed_confusion_counts`,
+      `test_best_threshold_is_the_lowest_one_reaching_the_top_f1`,
+      `test_roc_auc_is_perfect_when_scores_separate_the_classes`).
+- [x] Rows with `faithfulness: null` are counted as `unscored` and excluded from every threshold
+      metric — never coerced to 0.0 (`test_unscored_rows_are_counted_separately_and_excluded`;
+      the fixture's `s5` exists precisely to catch that).
+- [x] Agreement over samples both judges scored: Pearson and Spearman on faithfulness, and
+      Cohen's kappa on the binary calls at each judge's own best threshold
+      (`test_agreement_over_the_samples_both_judges_scored`). Pearson is asserted against the
+      hand-derived expression `0.45 / sqrt(0.59 * 0.35)` to 1e-9; Spearman is exactly 1.0 because
+      both judges rank the four shared samples identically.
+- [x] Efficiency per judge: median and p95 latency (linear interpolation, documented in the
+      report), mean tokens, and an estimated cost table driven by
+      `--cloud-input-cost-per-1m` / `--cloud-output-cost-per-1m`; the local judge is 0 with a
+      footnote about amortized hardware (`test_latency_and_token_efficiency_per_judge`,
+      `test_cost_model_prices_the_cloud_judge_and_zeroes_the_local_one`).
+- [x] `python -m slm_rag_eval.bench.analyze results/*.jsonl --out report/` writes `summary.md`
+      with every table plus `roc_curves.png`, `score_distributions.png`, and `latency_box.png`
+      — matplotlib only, default colors, one chart per figure
+      (`test_analyze_writes_every_output_file`). Judges are additionally distinguished by line
+      style on the ROC figure so identity does not depend on color alone.
+- [x] All three figures were rendered and visually inspected: labeled axes, no label collisions,
+      legend on the multi-series figure, medians matching the hand-computed 250 ms (cloud) and
+      30 ms (slm).
+- [x] New `[analysis]` optional dependency group (numpy, pandas, scikit-learn, matplotlib) and
+      `make setup` now installs `.[dev,analysis]`. SciPy is deliberately not used: Pearson is
+      `numpy.corrcoef` and Spearman is the same on pandas average ranks, so the analysis has no
+      undeclared transitive dependency.
+- [x] A sample report generated from the synthetic fixture is committed under
+      `docs/sample_report/`, with a README note that its numbers are illustrative only.
+- [x] `make check` green: ruff and mypy passed (25 source files); pytest reported 98 passed.

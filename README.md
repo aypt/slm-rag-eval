@@ -22,7 +22,7 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | M05 | FastAPI service + async worker + DB | done |
 | M06 | Dockerfile + docker-compose | done |
 | M07 | Benchmark harness (RAGTruth / HaluEval) | done |
-| M08 | Analysis + figures | todo |
+| M08 | Analysis + figures | done |
 | M09 | CLI + Streamlit demo | todo |
 | M10 | Docs, hardening, reproducibility | todo |
 
@@ -215,6 +215,33 @@ python -m slm_rag_eval.bench.run --dataset ragtruth --judge cloud --limit 200 --
 > production data. Keeping sensitive retrieved contexts away from third-party APIs is the
 > entire point of this project; the cloud judge exists only to produce a comparison baseline
 > on already-public datasets.
+
+### Analysis and figures
+
+```bash
+python -m slm_rag_eval.bench.analyze results/*.jsonl --out report/ \
+  --cloud-input-cost-per-1m 5 --cloud-output-cost-per-1m 15
+```
+
+Writes `report/summary.md` plus three PNGs (ROC curves with one line per judge, faithfulness
+distributions, latency box plot). The report contains:
+
+- **Detection quality** per judge. A sample is predicted hallucinated when
+  `faithfulness < t`; `t` is swept over `[0, 1]` in steps of `0.05` with precision, recall,
+  F1, and balanced accuracy at every step, plus the threshold-independent ROC-AUC. The
+  best-F1 threshold is reported per judge (ties go to the lower threshold). Rows the judge
+  could not score are counted as **unscored** and excluded from the threshold metrics rather
+  than being silently treated as zeros.
+- **Agreement** between judges over the samples both scored: Pearson and Spearman on the
+  faithfulness scores, and Cohen's kappa on the binary calls each judge makes at *its own*
+  best threshold.
+- **Efficiency**: median and p95 latency per sample, mean tokens, and an estimated cost table.
+  The cloud price is supplied with the two CLI flags; the local judge is reported at zero
+  marginal cost, with the caveat that it occupies hardware you already pay for.
+
+A sample report generated from the synthetic fixtures lives in
+[`docs/sample_report/`](docs/sample_report/summary.md) — it illustrates the output shape, and
+its numbers mean nothing beyond that.
 
 ### Datasets, licenses, citations
 
