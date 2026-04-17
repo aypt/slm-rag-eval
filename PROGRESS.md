@@ -320,3 +320,40 @@ Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates 
 - [x] A sample report generated from the synthetic fixture is committed under
       `docs/sample_report/`, with a README note that its numbers are illustrative only.
 - [x] `make check` green: ruff and mypy passed (25 source files); pytest reported 98 passed.
+
+## M09 · Demonstration interface (CLI + Streamlit dashboard) — DONE
+- [x] `rageval eval` accepts either `--question/--answer/--context` (repeatable) or `--json FILE`,
+      prints an aligned per-claim table plus scores, judge model, privacy mode, and timings, and
+      exits 1 only when faithfulness is below `--fail-under` (default 0.0, so it never fails
+      unless asked) — `tests/test_cli.py::test_eval_prints_the_claim_table_and_scores`,
+      `test_eval_reads_a_json_request_file`, `test_fail_under_sets_the_exit_code`,
+      `test_fail_under_defaults_to_never_failing`,
+      `test_eval_without_question_or_json_is_a_usage_error`.
+- [x] `rageval batch FILE.jsonl --out results.jsonl` writes the bench.run row schema minus
+      `label_hallucinated`, which a CLI batch has no way to know
+      (`test_batch_writes_one_row_per_input_line`).
+- [x] `rageval serve` starts uvicorn in-process against `service.api:app`.
+- [x] Tests drive the CLI through `typer.testing.CliRunner` with a `FakeLLMClient` injected via
+      the documented DI seam `cli.judge_factory`; no test touches the network.
+- [x] `apps/dashboard.py` is a single Streamlit file with an Evaluate tab (sanitized preview with
+      masked spans bolded, claim table, score metrics, latency, token totals) and a Results tab
+      (loads a bench JSONL and renders the M08 summary and figures inline), with base URL, model,
+      privacy mode, and metrics editable in the sidebar. No custom CSS.
+- [x] All dashboard logic lives in the new pure module `slm_rag_eval/demo.py` and is unit-tested
+      without Streamlit (`tests/test_demo.py`, 7 tests covering the sanitized preview in both
+      privacy modes, placeholder highlighting, verdict/score flattening, latency and token
+      summation, table truncation, and the batch row shape).
+- [x] Streamlit rendering itself is not unit-tested, per the spec. It was verified manually
+      twice: `streamlit run apps/dashboard.py --server.headless true` answered HTTP 200, and
+      `streamlit.testing.v1.AppTest.from_file("apps/dashboard.py").run()` executed the whole
+      script with `at.exception` empty, reporting the title, both tabs, and the sidebar inputs.
+      That check is deliberately not in the suite: Streamlit lives in the optional `[demo]`
+      extra, and `make check` must stay green without it.
+- [x] `docs/demo.md` is a copy-paste walkthrough (setup → CLI → batch → benchmark → dashboard →
+      service) containing a real captured `rageval eval` transcript. The transcript is pinned by
+      `test_demo_transcript_matches_the_documented_output`, which regenerates it through the test
+      runner and asserts the documented text still matches (timings normalized, since only they
+      vary).
+- [x] New `[demo]` optional dependency group (streamlit) and a `make demo` target.
+- [x] `make check` green: ruff and mypy passed (26 source files); pytest reported 113 passed.
+      `ruff check apps` is clean too, although the untouched `lint` target only covers src/tests.

@@ -23,7 +23,7 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | M06 | Dockerfile + docker-compose | done |
 | M07 | Benchmark harness (RAGTruth / HaluEval) | done |
 | M08 | Analysis + figures | done |
-| M09 | CLI + Streamlit demo | todo |
+| M09 | CLI + Streamlit demo | done |
 | M10 | Docs, hardening, reproducibility | todo |
 
 ## Deploy
@@ -95,6 +95,37 @@ The defaults detect `PERSON`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `I
 `SLMEVAL_PRIVACY_ENTITIES` (a JSON list of Presidio entity names) and
 `SLMEVAL_PRIVACY_SCORE_THRESHOLD` (from `0.0` to `1.0`). A lower threshold favors recall and
 may mask more non-PII text; a higher threshold favors precision and may miss more PII.
+
+## Command line
+
+```bash
+rageval eval --question "What did Aurora carry?" \
+             --answer "Aurora carried 4 instruments." \
+             --context "Aurora carried 3 instruments." \
+             --fail-under 0.8        # exit 1 when faithfulness is below the bar (CI gate)
+
+rageval eval --json request.json     # same thing from a file
+rageval batch inputs.jsonl --out results.jsonl
+rageval serve                        # start the API in this process
+```
+
+`eval` prints a per-claim table (claim, verdict, reason), the scores, the judge model, the
+privacy mode, and timings. `batch` writes the benchmark row schema minus the human label, so
+its output feeds the same analysis as `bench.run`. A full walkthrough with expected output is
+in [docs/demo.md](docs/demo.md).
+
+## Dashboard
+
+```bash
+pip install -e ".[demo]"
+make demo                            # streamlit run apps/dashboard.py
+```
+
+Two tabs: **Evaluate** shows the sanitized preview (masked spans in bold — what the judge
+actually receives) before running the claim table and scores, and **Results** renders the
+benchmark report inline from a results JSONL. Judge base URL, model, privacy mode, and metrics
+are editable in the sidebar. All of its logic lives in `slm_rag_eval.demo`, so the app file is
+only input collection and rendering.
 
 ## Run the service
 

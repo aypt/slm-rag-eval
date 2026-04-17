@@ -30,6 +30,9 @@ dependencies = [
 postgres = [
   "asyncpg>=0.29",
 ]
+demo = [
+  "streamlit>=1.36",
+]
 analysis = [
   "numpy>=1.26",
   "pandas>=2.2",

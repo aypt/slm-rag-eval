@@ -1,4 +1,4 @@
-.PHONY: setup lint type test check run docker-build docker-up docker-down docker-logs \
+.PHONY: setup lint type test check run demo docker-build docker-up docker-down docker-logs \
 	next-task all-tasks
 
 setup:
@@ -18,6 +18,9 @@ check: lint type test
 
 run:
 	uvicorn slm_rag_eval.service.api:app --reload --host 0.0.0.0 --port 8000
+
+demo:
+	streamlit run apps/dashboard.py
 
 docker-build:
 	docker compose build
