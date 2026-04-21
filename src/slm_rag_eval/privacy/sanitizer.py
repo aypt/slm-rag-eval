@@ -42,7 +42,9 @@ class _Analyzer(Protocol):
         language: str,
         entities: list[str],
         score_threshold: float,
-    ) -> Sequence[_RecognizerResult]: ...
+    ) -> Sequence[_RecognizerResult]:
+        """Return the detected entity spans above `score_threshold`."""
+        ...
 
 
 @dataclass(frozen=True)

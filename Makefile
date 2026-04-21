@@ -1,4 +1,4 @@
-.PHONY: setup lint type test check run demo docker-build docker-up docker-down docker-logs \
+.PHONY: setup lint type test check run demo reproduce docker-build docker-up docker-down docker-logs \
 	next-task all-tasks
 
 setup:
@@ -21,6 +21,9 @@ run:
 
 demo:
 	streamlit run apps/dashboard.py
+
+reproduce:
+	python -m slm_rag_eval.bench.reproduce
 
 docker-build:
 	docker compose build

@@ -250,6 +250,7 @@ class CostModel:
     cloud_output_per_1m: float = 0.0
 
     def estimate(self, report: JudgeReport, samples: int) -> float:
+        """Estimated USD for `samples` requests at this judge's mean token usage."""
         if report.judge == "slm":
             return 0.0
         prompt = report.mean_tokens.get("prompt_tokens", 0.0) * samples

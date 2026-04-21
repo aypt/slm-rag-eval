@@ -10,14 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+import logging
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.responses import Response
 
 from slm_rag_eval.core.config import Settings, get_settings
-from slm_rag_eval.metrics.registry import RequestSanitizer, sanitize_for_judge
+from slm_rag_eval.llm.errors import JSONGenerationError
+from slm_rag_eval.metrics.registry import RequestSanitizer, sanitize_for_judge, validate_metrics
 from slm_rag_eval.service.db import (
     SessionFactory,
     create_engine,
@@ -26,6 +32,7 @@ from slm_rag_eval.service.db import (
     create_tables,
     get_job,
 )
+from slm_rag_eval.service.logging import configure_logging, request_id_var
 from slm_rag_eval.service.schemas import (
     EvaluationSubmission,
     JobStatusResponse,
@@ -33,6 +40,16 @@ from slm_rag_eval.service.schemas import (
     SubmitResponse,
 )
 from slm_rag_eval.service.worker import EvaluationWorker, JudgeFactory
+
+logger = logging.getLogger(__name__)
+
+
+def _error_response(status_code: int, detail: str) -> JSONResponse:
+    """One error shape for every mapped exception, carrying the correlation id."""
+    request_id = request_id_var.get()
+    logger.warning("request failed", extra={"status_code": status_code, "detail": detail})
+    body: dict[str, str | None] = {"detail": detail, "request_id": request_id}
+    return JSONResponse(status_code=status_code, content=body)
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -68,9 +85,11 @@ def create_app(
 ) -> FastAPI:
     """Build the application. Every collaborator is injectable so tests stay offline."""
     runtime_settings = settings or get_settings()
+    configure_logging()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Open the database, start the embedded worker, and tear both down on exit."""
         owns_engine = engine is None
         active_engine = engine or create_engine(runtime_settings.database_url)
         session_factory = create_session_factory(active_engine)
@@ -105,6 +124,46 @@ def create_app(
 
     app = FastAPI(title="slm-rag-eval", version="0.1.0", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def correlate_and_log(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Tag every request with an id, echo it back, and log the outcome as JSON."""
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers["x-request-id"] = request_id
+        # Path and status only: request bodies can hold PII that masking removed.
+        logger.info(
+            "request handled",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "request_id": request_id,
+            },
+        )
+        return response
+
+    @app.exception_handler(ValueError)
+    async def handle_value_error(request: Request, exc: Exception) -> JSONResponse:
+        """A rejected input (unknown metric, malformed option) is the caller's fault."""
+        return _error_response(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    @app.exception_handler(JSONGenerationError)
+    async def handle_judge_error(request: Request, exc: Exception) -> JSONResponse:
+        """The judge backend answered with something unusable: an upstream failure."""
+        return _error_response(status.HTTP_502_BAD_GATEWAY, str(exc))
+
+    @app.exception_handler(SQLAlchemyError)
+    async def handle_storage_error(request: Request, exc: Exception) -> JSONResponse:
+        """The job store is unavailable; the caller may retry later."""
+        return _error_response(status.HTTP_503_SERVICE_UNAVAILABLE, "Job storage is unavailable")
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         """Liveness probe used by container healthchecks."""
@@ -123,6 +182,8 @@ def create_app(
     ) -> SubmitResponse:
         """Queue one evaluation and return its job id."""
         options = submission.options.resolve(app_settings)
+        # Reject an impossible request now: a 202 for a job that can never succeed is a lie.
+        validate_metrics(options.metrics)
         judge_request, _mapping = sanitize_for_judge(
             submission.to_eval_request(),
             settings=app_settings.model_copy(update={"privacy_mode": options.privacy_mode}),

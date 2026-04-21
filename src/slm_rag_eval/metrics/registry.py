@@ -17,9 +17,13 @@ from slm_rag_eval.privacy.sanitizer import SanitizedBatch, Sanitizer
 class RequestSanitizer(Protocol):
     """Injectable masking boundary used by tests and alternate detectors."""
 
-    def sanitize(self, texts: list[str]) -> SanitizedBatch: ...
+    def sanitize(self, texts: list[str]) -> SanitizedBatch:
+        """Mask PII in a batch of texts, returning them plus the placeholder mapping."""
+        ...
 
-    def restore(self, text: str, mapping: dict[str, str]) -> str: ...
+    def restore(self, text: str, mapping: dict[str, str]) -> str:
+        """Put the original values back for trusted local display."""
+        ...
 
 
 async def _faithfulness_runner(
@@ -37,6 +41,21 @@ async def _relevance_runner(request: EvalRequest, judge: LLMClient) -> EvalResul
 
 
 _AVAILABLE_METRICS = ("faithfulness", "relevance")
+
+
+def available_metrics() -> tuple[str, ...]:
+    """Metric names `evaluate` accepts."""
+    return _AVAILABLE_METRICS
+
+
+def validate_metrics(metrics: list[str]) -> None:
+    """Raise ValueError naming the unknown metrics, so callers can reject early."""
+    unknown = sorted(set(metrics) - set(_AVAILABLE_METRICS))
+    if unknown:
+        available = ", ".join(_AVAILABLE_METRICS)
+        raise ValueError(
+            f"Unknown metric(s): {', '.join(unknown)}. Available metrics: {available}"
+        )
 
 
 @lru_cache(maxsize=8)
@@ -108,12 +127,7 @@ async def evaluate(
 ) -> EvalResult:
     """Mask a request, run selected metrics, and merge their scores and metadata."""
     selected = metrics if metrics is not None else ["faithfulness"]
-    unknown = sorted(set(selected) - set(_AVAILABLE_METRICS))
-    if unknown:
-        available = ", ".join(_AVAILABLE_METRICS)
-        raise ValueError(
-            f"Unknown metric(s): {', '.join(unknown)}. Available metrics: {available}"
-        )
+    validate_metrics(selected)
 
     runtime_settings = settings if settings is not None else get_settings()
     active_sanitizer = sanitizer

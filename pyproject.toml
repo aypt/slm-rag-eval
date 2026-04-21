@@ -69,6 +69,17 @@ python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_ignores = false
 
+# M10 hardening: the evaluation core must be fully annotated. This only ADDS strictness
+# (see AGENTS.md "Never weaken verification"); nothing here relaxes an existing check.
+[[tool.mypy.overrides]]
+module = [
+  "slm_rag_eval.core.*",
+  "slm_rag_eval.llm.*",
+  "slm_rag_eval.metrics.*",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

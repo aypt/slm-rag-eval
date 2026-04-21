@@ -32,7 +32,9 @@ class LLMClient(Protocol):
         json_schema: dict[str, Any] | None = None,
         temperature: float = 0.0,
         max_tokens: int = 1024,
-    ) -> LLMResponse: ...
+    ) -> LLMResponse:
+        """Generate one completion, optionally constrained to a JSON schema."""
+        ...
 
 
 def _is_retryable_transport_error(exc: BaseException) -> bool:

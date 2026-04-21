@@ -24,7 +24,35 @@ the full plan and `docs/automation.md` for how the autonomous runner works).
 | M07 | Benchmark harness (RAGTruth / HaluEval) | done |
 | M08 | Analysis + figures | done |
 | M09 | CLI + Streamlit demo | done |
-| M10 | Docs, hardening, reproducibility | todo |
+| M10 | Docs, hardening, reproducibility | done |
+
+## How it works
+
+A retrieved-context evaluation never leaves your infrastructure: the request is masked at the
+trust boundary, and the judge is a small model you host.
+
+```text
+  client ──POST /v1/evaluations──▶ FastAPI ──▶ Presidio sanitizer ──▶ job row (masked)
+                                     │                                    │
+                                     │ 202 {job_id}                       │ claim (UPDATE)
+                                     ▼                                    ▼
+  client ──GET /v1/evaluations/{id}──▶ job row ◀──── result ────── async worker
+                                                                          │
+                                             ┌────────────────────────────┴────────────┐
+                                             ▼                                         ▼
+                                    faithfulness metric                        relevance metric
+                                    claims → verify(≤5)                        3 questions → rate
+                                             └────────────────┬────────────────────────┘
+                                                              ▼
+                                                    SLM judge (Ollama /
+                                                    any OpenAI-compatible)
+                                                              │
+   bench.run ──▶ rows.jsonl ──▶ bench.analyze ──▶ report/summary.md + figures
+```
+
+The same pipeline is reachable three ways: `rageval` on the command line, the FastAPI service,
+and the Streamlit dashboard. `bench.run` drives it over labeled datasets to compare an SLM
+judge against a cloud baseline.
 
 ## Deploy
 
@@ -33,10 +61,13 @@ First time here? Follow **docs/SETUP.md** step by step (从零部署手册).
 ## Development
 
 ```bash
-source .venv/bin/activate   # same interpreter for setup and check — see the note below
-make setup   # install package + dev tools
-make check   # ruff + mypy + pytest — the definition of "green"
-make run     # dev server on :8000 (GET /healthz)
+python3 -m venv .venv && source .venv/bin/activate   # one interpreter for everything
+make setup                  # package + dev/analysis extras + the spaCy model
+make check                  # ruff + mypy + pytest — the definition of "green"
+make run                    # dev server on :8000 (GET /healthz)
+make reproduce              # 20-sample bench + analysis into report/repro/
+
+pip install -e ".[dev,analysis]" -c constraints.txt   # exact pinned versions
 ```
 
 Run `make setup` and `make check` under the **same** interpreter. The task runner puts
@@ -303,15 +334,79 @@ export SLMEVAL_MAX_RETRIES=3
 `SLMEVAL_API_KEY` is optional and should be left unset for an unsecured local Ollama
 server. Set it when the selected OpenAI-compatible backend requires bearer authentication.
 
-Metric and privacy defaults are:
-
-| Environment variable | Default | Meaning |
-|---|---|---|
-| `SLMEVAL_ENABLED_METRICS` | `["faithfulness"]` | Registry metrics (JSON list) |
-| `SLMEVAL_K` | `1` | Faithfulness verification runs used for majority voting |
-| `SLMEVAL_STRICT` | `true` | Count uncertain faithfulness verdicts as unsupported |
-| `SLMEVAL_PRIVACY_MODE` | `mask` | `mask` or `off` |
-| `SLMEVAL_PRIVACY_ENTITIES` | Presidio PII list above | Entity names to detect (JSON list) |
-| `SLMEVAL_PRIVACY_SCORE_THRESHOLD` | `0.4` | Minimum detector confidence (`0.0`–`1.0`) |
-
 Keep `SLMEVAL_PRIVACY_MODE=mask` when the configured judge is outside the trusted process.
+
+### Configuration reference
+
+Every setting, emitted from the `Settings` model by
+`python scripts/emit_config_table.py` — regenerate and paste after changing the model, and
+`tests/deploy/` will fail if `.env.example` stops covering it.
+
+<!-- generated: python scripts/emit_config_table.py -->
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `SLMEVAL_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible judge endpoint. |
+| `SLMEVAL_API_KEY` | (unset) | Bearer token; leave unset for a local Ollama. |
+| `SLMEVAL_MODEL` | `qwen2.5:7b-instruct` | Judge model name. |
+| `SLMEVAL_TIMEOUT_S` | `120.0` | Per-request timeout in seconds. |
+| `SLMEVAL_MAX_RETRIES` | `3` | Attempts for transient transport failures. |
+| `SLMEVAL_ENABLED_METRICS` | `["faithfulness"]` | Metrics the registry runs by default (JSON list). |
+| `SLMEVAL_K` | `1` | Self-consistency verification runs. |
+| `SLMEVAL_STRICT` | `true` | Count uncertain verdicts as unsupported. |
+| `SLMEVAL_PRIVACY_MODE` | `mask` | `mask` sanitizes every request before it leaves the process. |
+| `SLMEVAL_PRIVACY_ENTITIES` | `["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "IP_ADDRESS", "LOCATION", "US_SSN"]` | Presidio entity types to detect (JSON list). |
+| `SLMEVAL_PRIVACY_SCORE_THRESHOLD` | `0.4` | Minimum detector confidence. |
+| `DATABASE_URL` | `sqlite+aiosqlite:///data/jobs.db` | Job store; SQLite by default, Postgres in the compose deployment. |
+| `WORKER_EMBEDDED` | `true` | Run the worker inside the API process. |
+| `WORKER_CONCURRENCY` | `2` | Jobs evaluated in parallel per worker. |
+
+`JUDGE_MODEL` is compose-only: the `ollama-init` service pulls it. Keep it equal to
+`SLMEVAL_MODEL`.
+
+## Reproducing the results
+
+```bash
+make reproduce          # 20-sample bench + analysis into report/repro/
+```
+
+It uses the configured Ollama judge when `SLMEVAL_BASE_URL` answers, and an offline stub
+otherwise, so it runs on any machine. **The stub is not an evaluator** — it marks every claim
+`uncertain`, which scores 0.0 across the board in strict mode. That is deliberate: a smoke
+test must be impossible to mistake for a result. For real numbers, start a judge first.
+
+Full benchmark reproduction:
+
+```bash
+python scripts/download_ragtruth.py
+python -m slm_rag_eval.bench.run --dataset ragtruth --judge slm   --limit 200 --out results/
+python -m slm_rag_eval.bench.run --dataset ragtruth --judge cloud --limit 200 --out results/
+python -m slm_rag_eval.bench.analyze results/*.jsonl --out report/
+```
+
+Each run records the git sha, UTC timestamp, and parameters in its manifest. Dependencies are
+pinned in `constraints.txt`; install with `-c constraints.txt` to reproduce the exact
+environment the numbers came from.
+
+## Limitations and future work
+
+- **Masking is best-effort.** Presidio's NER misses entities, and only the configured entity
+  types are masked at all. Indirect identifiers (a rare job title plus a city) survive
+  masking. Treat `mask` as risk reduction, not anonymization, and keep an in-process judge
+  when a miss would be unacceptable.
+- **Results served by the API stay masked.** The placeholder mapping is never persisted, so
+  the de-anonymized text exists only inside the process that did the masking. The CLI shows
+  restored verdicts; the service does not.
+- **The judge is the measurement instrument.** Faithfulness is what an SLM believes the
+  contexts support, and small models are weaker at multi-hop and numeric reasoning. Always
+  report the judge model and `k` alongside any score.
+- **Response-level labels.** RAGTruth annotates spans; this harness collapses them to one
+  boolean per response, which cannot distinguish one bad clause from a wholly fabricated
+  answer.
+- **Two metrics.** Faithfulness and relevance only — no context precision/recall, no answer
+  completeness.
+- **Not tuned.** No prompt or threshold was fitted to any benchmark example; the reported
+  best-F1 threshold is selected on the same data it is reported for, so treat it as an upper
+  bound rather than a deployment setting, and re-select it on a held-out split before use.
+- Future work: held-out threshold selection, span-level evaluation, a batched judge API for
+  throughput, quantized-model comparisons, and non-English detector coverage.

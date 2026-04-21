@@ -76,6 +76,7 @@ class _RecordingClient:
         temperature: float = 0.0,
         max_tokens: int = 1024,
     ) -> LLMResponse:
+        """Delegate to the wrapped client, accumulating token usage and model name."""
         response = await self._client.complete(
             messages,
             json_schema=json_schema,

@@ -25,6 +25,7 @@ from slm_rag_eval.service.db import (
     fail_job,
     finish_job,
 )
+from slm_rag_eval.service.logging import configure_logging, job_id_var
 from slm_rag_eval.service.schemas import StoredJobRequest
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,11 @@ class EvaluationWorker:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
     async def _process_and_release(self, job: Job) -> None:
+        token = job_id_var.set(job.id)
         try:
             await self._process(job)
         finally:
+            job_id_var.reset(token)
             self._semaphore.release()
 
     async def _process(self, job: Job) -> None:
@@ -154,7 +157,7 @@ async def run_standalone(settings: Settings | None = None) -> None:
 
 def main() -> None:
     """Console entry point; Ctrl-C stops the loop without a traceback."""
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run_standalone())
 
