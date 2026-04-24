@@ -388,6 +388,36 @@ Each run records the git sha, UTC timestamp, and parameters in its manifest. Dep
 pinned in `constraints.txt`; install with `-c constraints.txt` to reproduce the exact
 environment the numbers came from.
 
+### Verified fresh-clone walkthrough
+
+This exact sequence was executed in an empty directory on 2026-08-05 (commit `9001cfa`,
+Python 3.12); the output below is what it printed.
+
+```console
+$ git clone <this repo> slm-rag-eval && cd slm-rag-eval
+$ python3 -m venv .venv && source .venv/bin/activate
+$ make setup
+...
+✔ Download and installation successful
+You can now load the package via spacy.load('en_core_web_lg')
+
+$ make check
+ruff check src tests
+All checks passed!
+mypy src
+Success: no issues found in 28 source files
+pytest -q
+126 passed in 12.16s
+
+$ make reproduce
+http://localhost:11434/v1 is not reachable — running the OFFLINE STUB judge.
+The report this writes is a smoke test, not an evaluation result.
+scoring 4 samples with the stub judge (offline-stub)
+...
+"samples_written": "4", "failure_count": "0"
+report: report/repro/summary.md
+```
+
 ## Limitations and future work
 
 - **Masking is best-effort.** Presidio's NER misses entities, and only the configured entity

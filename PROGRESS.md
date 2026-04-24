@@ -357,3 +357,49 @@ Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates 
 - [x] New `[demo]` optional dependency group (streamlit) and a `make demo` target.
 - [x] `make check` green: ruff and mypy passed (26 source files); pytest reported 113 passed.
       `ruff check apps` is clean too, although the untouched `lint` target only covers src/tests.
+
+## M10 · Documentation, hardening, reproducibility — DONE
+- [x] README overhaul: problem statement, ASCII architecture diagram (client → API → sanitizer →
+      job row → worker → metrics → judge → bench/report), local and Docker quickstarts, metrics
+      explanation, benchmark reproduction steps, and a "Limitations and future work" section that
+      states plainly what masking does not protect, that the reported best-F1 threshold is
+      selected on the data it is reported for, and that no prompt or threshold was fitted to any
+      benchmark example.
+- [x] The configuration reference table is generated from the `Settings` model by
+      `scripts/emit_config_table.py` and pasted into the README, so documented defaults cannot
+      drift from the code; `tests/deploy/test_env_example_documents_every_setting` independently
+      fails if `.env.example` stops covering a field. Field descriptions were added to `Settings`
+      to make the generated table useful.
+- [x] Docstrings added to every remaining public function/class (verified with an AST sweep over
+      `src/`), and mypy tightened with `disallow_untyped_defs` + `disallow_incomplete_defs` for
+      `slm_rag_eval.core.*`, `llm.*`, and `metrics.*`. This edits `[tool.mypy]`, which AGENTS.md
+      rule 2 otherwise puts off-limits — flagged deliberately: the task requires it, and the
+      change only ADDS strictness. Nothing existing was relaxed; `make check` is green under it.
+- [x] Error-path review found a real defect: an unknown metric name was accepted with 202 and only
+      failed later in the worker. `registry.validate_metrics` is now called on the submit path, so
+      an impossible request is rejected with 400 before a job row exists
+      (`tests/service/test_errors_and_logging.py::test_unknown_metric_is_mapped_to_400_with_the_request_id`).
+- [x] Consistent exception → HTTP mapping: `ValueError` → 400, `JSONGenerationError` → 502,
+      `SQLAlchemyError` → 503, each with `{detail, request_id}`; malformed bodies still 422 before
+      any judge call (`test_malformed_bodies_are_rejected_before_any_work`).
+- [x] Structured JSON logging (`service/logging.py`): one JSON object per line with
+      `request_id`/`job_id` correlation from context vars, exception rendering, and extras folded
+      in (4 tests). A middleware assigns a request id, honors a caller-supplied `x-request-id`,
+      and echoes it on the response (`test_every_response_carries_a_request_id`); the worker binds
+      `job_id` around each job. Log records deliberately carry path/status only — never request
+      text, which may hold the PII masking removed.
+- [x] `make reproduce` runs a bench + analysis into `report/repro/`, using the configured judge
+      when `SLMEVAL_BASE_URL` answers and an offline stub otherwise, with built-in synthetic
+      samples when no dataset is cached (`tests/bench/test_reproduce.py`, 6 tests). The stub marks
+      every claim `uncertain` — scoring 0.0 across the board in strict mode — precisely so its
+      output cannot be mistaken for an evaluation result; it prints that warning too.
+- [x] `constraints.txt` pins the exact versions of all 107 installed packages, with the
+      regeneration command in its header, and the README shows `-c constraints.txt`.
+- [x] Fresh-clone path verified by actually executing it, not by inspection. In an empty
+      directory: `git clone` (commit 9001cfa) → `python3 -m venv .venv` → `make setup` (exit 0,
+      `en_core_web_lg` downloaded) → `make check` (ruff clean, mypy clean on 28 source files,
+      **126 passed in 12.16s**) → `make reproduce` (4 samples, `failure_count: 0`,
+      `report/repro/summary.md` written, with the default `privacy_mode: mask` exercising real
+      Presidio). Nothing broke, so nothing needed fixing; the transcript is quoted verbatim in the
+      README under "Verified fresh-clone walkthrough".
+- [x] `make check` green: ruff and mypy passed (28 source files); pytest reported 126 passed.
