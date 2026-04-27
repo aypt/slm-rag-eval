@@ -138,6 +138,29 @@ async def _extract_claims(client: LLMClient, answer: str) -> list[str]:
     return retried.claims
 
 
+def _normalized(text: str) -> str:
+    """Compare claims ignoring only whitespace and case, never wording."""
+    return " ".join(text.split()).casefold()
+
+
+def _batch_problem(claims: list[str], verdicts: list[ClaimVerdict]) -> str | None:
+    """Describe the first contract violation in a verdict batch, or None if it is sound.
+
+    The prompt requires one item per claim, in claim index order, with the claim copied
+    verbatim. That echoed claim is the alignment token: without checking it, a judge that
+    answers in a different order silently attaches each verdict to the wrong claim.
+    """
+    if len(verdicts) != len(claims):
+        return f"You returned {len(verdicts)} items for {len(claims)} claims."
+    for index, (claim, verdict) in enumerate(zip(claims, verdicts, strict=True)):
+        if _normalized(verdict.claim) != _normalized(claim):
+            return (
+                f"Item {index} carries claim {json.dumps(verdict.claim)} "
+                f"but claim {index} is {json.dumps(claim)}."
+            )
+    return None
+
+
 async def _verify_batch(
     client: LLMClient,
     contexts: list[str],
@@ -146,25 +169,27 @@ async def _verify_batch(
     messages = _verification_messages(contexts, claims)
     response = await generate_json(client, messages, _ClaimVerdicts)
     verdicts = response.root
-    if len(verdicts) != len(claims):
+
+    problem = _batch_problem(claims, verdicts)
+    if problem is not None:
         retry_messages = [
             *messages,
             {"role": "assistant", "content": response.model_dump_json()},
             {
                 "role": "user",
                 "content": (
-                    f"You returned {len(verdicts)} items for {len(claims)} claims. "
-                    f"Return exactly {len(claims)} items, aligned with claim indexes "
-                    f"0 through {len(claims) - 1}."
+                    f"{problem} Return exactly {len(claims)} items, aligned with claim indexes "
+                    f"0 through {len(claims) - 1}, copying each claim verbatim into claim."
                 ),
             },
         ]
         verdicts = (await generate_json(client, retry_messages, _ClaimVerdicts)).root
+        problem = _batch_problem(claims, verdicts)
 
-    if len(verdicts) != len(claims):
-        raise ValueError(
-            "Judge returned a verdict count that did not match the claim count after one retry"
-        )
+    if problem is not None:
+        # Never guess an alignment: a misattributed verdict is a wrong evaluation, and a
+        # wrong evaluation that looks fine is worse than a failed one.
+        raise ValueError(f"Judge verdicts stayed misaligned after one retry: {problem}")
 
     return [
         ClaimVerdict(claim=claim, verdict=verdict.verdict, reason=verdict.reason)
