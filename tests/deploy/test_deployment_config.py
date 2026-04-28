@@ -64,6 +64,17 @@ def test_api_serves_http_while_the_worker_runs_separately() -> None:
     assert api["env_file"] == worker["env_file"] == ".env"
 
 
+def test_worker_does_not_inherit_the_api_healthcheck() -> None:
+    """The image probes /healthz; only the api serves it, so the worker must opt out."""
+    worker = _service("worker")
+    api = _service("api")
+
+    assert worker["healthcheck"] == {"disable": True}
+    assert worker["image"] == api["image"]  # same image, hence the inherited HEALTHCHECK
+    assert "ports" not in worker
+    assert "HEALTHCHECK" in DOCKERFILE
+
+
 def test_database_is_postgres_with_a_readiness_check_and_named_volume() -> None:
     db = _service("db")
 

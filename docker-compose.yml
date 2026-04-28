@@ -20,6 +20,11 @@ services:
     image: slm-rag-eval:latest
     env_file: .env
     command: ["python", "-m", "slm_rag_eval.service.worker"]
+    # The image's HEALTHCHECK probes /healthz, which only the api service serves. Left
+    # inherited, this container would report unhealthy forever and block anything that
+    # waits on service_healthy.
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy
