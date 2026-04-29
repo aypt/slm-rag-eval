@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Any
@@ -56,6 +57,28 @@ def completed_sample_ids(rows_path: Path) -> set[str]:
             if sample_id is not None:
                 done.add(str(sample_id))
     return done
+
+
+class PrivacyMode(StrEnum):
+    """CLI-visible privacy modes. An unrecognized value must never silently unmask."""
+
+    mask = "mask"
+    off = "off"
+
+
+def apply_privacy_mode(settings: Settings, privacy_mode: str | None) -> Settings:
+    """Override the configured privacy mode, re-validating instead of trusting the string.
+
+    `model_copy(update=...)` skips validation, so a typo used to land in Settings unchecked
+    and every non-`mask` value disables masking — a silent data leak. Re-validating turns a
+    typo into an error.
+    """
+    if privacy_mode is None:
+        return settings
+    return Settings.model_validate(
+        {**settings.model_dump(), "privacy_mode": privacy_mode},
+        strict=False,
+    )
 
 
 def build_judge(judge: str, settings: Settings) -> tuple[LLMClient, Settings]:
@@ -227,7 +250,8 @@ def main(
     limit: Annotated[int | None, typer.Option(help="Score only the first N samples.")] = None,
     out: Annotated[Path, typer.Option(help="Output directory for JSONL rows.")] = Path("results"),
     privacy_mode: Annotated[
-        str | None, typer.Option(help="mask or off; defaults to the configured setting.")
+        PrivacyMode | None,
+        typer.Option(help="mask or off; defaults to the configured setting."),
     ] = None,
     metric: Annotated[
         list[str] | None, typer.Option(help="Repeatable; defaults to the configured metrics.")
@@ -235,9 +259,7 @@ def main(
     data_dir: Annotated[Path | None, typer.Option(help="Dataset cache directory.")] = None,
 ) -> None:
     """Run one judge over one dataset and write results/<dataset>_<judge>.jsonl."""
-    settings = get_settings()
-    if privacy_mode is not None:
-        settings = settings.model_copy(update={"privacy_mode": privacy_mode})
+    settings = apply_privacy_mode(get_settings(), privacy_mode.value if privacy_mode else None)
 
     samples = load(dataset, limit, data_dir=data_dir)
     client, judge_settings = build_judge(judge, settings)

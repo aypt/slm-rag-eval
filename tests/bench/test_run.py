@@ -5,9 +5,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
+from typer.testing import CliRunner
 
 from slm_rag_eval.bench.datasets import LabeledSample, load
-from slm_rag_eval.bench.run import build_judge, output_paths, run_benchmark
+from slm_rag_eval.bench.run import (
+    app,
+    apply_privacy_mode,
+    build_judge,
+    output_paths,
+    run_benchmark,
+)
 from slm_rag_eval.core.config import Settings
 from slm_rag_eval.llm.client import LLMResponse
 from tests.conftest import FakeLLMClient
@@ -189,3 +197,34 @@ def test_cloud_judge_requires_explicit_configuration(monkeypatch: pytest.MonkeyP
 def test_unknown_judge_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unknown judge: oracle"):
         build_judge("oracle", _settings())
+
+
+def test_privacy_mode_override_is_validated_not_trusted() -> None:
+    """A typo must never land in Settings: every non-`mask` value disables masking."""
+    settings = _settings(privacy_mode="mask")
+
+    assert apply_privacy_mode(settings, None).privacy_mode == "mask"
+    assert apply_privacy_mode(settings, "off").privacy_mode == "off"
+    assert apply_privacy_mode(_settings(privacy_mode="off"), "mask").privacy_mode == "mask"
+
+    with pytest.raises(ValidationError):
+        apply_privacy_mode(settings, "typo")
+    with pytest.raises(ValidationError):
+        apply_privacy_mode(settings, "MASK")
+
+
+def test_privacy_mode_override_keeps_every_other_setting() -> None:
+    settings = _settings(privacy_mode="mask", k=3, strict=False, model="synthetic-slm")
+
+    overridden = apply_privacy_mode(settings, "off")
+
+    assert (overridden.k, overridden.strict, overridden.model) == (3, False, "synthetic-slm")
+
+
+def test_cli_rejects_an_unknown_privacy_mode() -> None:
+    result = CliRunner().invoke(
+        app, ["--privacy-mode", "typo", "--dataset", "halueval", "--data-dir", str(FIXTURE_DATA)]
+    )
+
+    assert result.exit_code != 0
+    assert "'typo' is not one of 'mask', 'off'" in result.output.replace("\n", "")
