@@ -38,6 +38,73 @@ def output_paths(out_dir: Path, dataset: str, judge: str) -> tuple[Path, Path]:
     return out_dir / f"{stem}.jsonl", out_dir / f"{stem}.manifest.json"
 
 
+class IncompatibleResumeError(ValueError):
+    """Raised when an existing rows file was produced by a different run configuration."""
+
+
+def run_identity(
+    dataset: str,
+    judge_name: str,
+    model: str,
+    metrics: list[str],
+    settings: Settings,
+) -> dict[str, Any]:
+    """Everything that must match for two runs to belong in the same rows file.
+
+    `limit` is excluded on purpose — extending a run to more samples is the whole point of
+    resuming. The judge, the model, the metric set, and the scoring parameters are not:
+    mixing them produces a file whose rows cannot all be attributed to one configuration.
+    """
+    return {
+        "dataset": dataset,
+        "judge": judge_name,
+        "model": model,
+        "metrics": sorted(metrics),
+        "k": settings.k,
+        "strict": settings.strict,
+        "privacy_mode": settings.privacy_mode,
+    }
+
+
+def check_resume_compatibility(
+    rows_path: Path,
+    manifest_path: Path,
+    identity: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Refuse to append to rows produced under a different configuration.
+
+    Returns the previous manifest when resuming is safe, or None for a fresh run.
+    """
+    if not rows_path.exists() or rows_path.stat().st_size == 0:
+        return None
+    if not manifest_path.exists():
+        raise IncompatibleResumeError(
+            f"{rows_path} exists but {manifest_path} does not, so the configuration that "
+            "produced those rows cannot be verified. Move them aside or use a new --out."
+        )
+
+    previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+    previous_identity = previous.get("run_identity")
+    if previous_identity is None:
+        raise IncompatibleResumeError(
+            f"{manifest_path} predates run-identity tracking, so a resume cannot be verified. "
+            "Move the rows aside or use a new --out."
+        )
+
+    differences = [
+        f"{key}: {previous_identity.get(key)!r} -> {value!r}"
+        for key, value in identity.items()
+        if previous_identity.get(key) != value
+    ]
+    if differences:
+        raise IncompatibleResumeError(
+            "Refusing to resume into rows scored with a different configuration ("
+            + "; ".join(differences)
+            + f"). Use a new --out directory, or delete {rows_path}."
+        )
+    return previous
+
+
 def completed_sample_ids(rows_path: Path) -> set[str]:
     """Sample ids already written, so a resumed run can skip them."""
     if not rows_path.exists():
@@ -176,6 +243,8 @@ async def run_benchmark(
     out_dir.mkdir(parents=True, exist_ok=True)
     rows_path, manifest_path = output_paths(out_dir, dataset, judge_name)
 
+    identity = run_identity(dataset, judge_name, model, selected, settings)
+    previous = check_resume_compatibility(rows_path, manifest_path, identity)
     already_done = completed_sample_ids(rows_path)
     written = 0
     failures: list[dict[str, str]] = []
@@ -203,18 +272,27 @@ async def run_benchmark(
             handle.flush()
             written += 1
 
+    current_sha = git_sha()
+    # Every commit whose rows are in this file: code can change between resumes even when
+    # the configuration does not, and the report should say so.
+    contributing_shas = list(previous.get("git_shas", []) if previous else [])
+    if current_sha is not None and current_sha not in contributing_shas and written:
+        contributing_shas.append(current_sha)
+
     manifest = {
         "dataset": dataset,
         "judge": judge_name,
         "model": model,
         "metrics": selected,
+        "run_identity": identity,
         "params": {
             "k": settings.k,
             "strict": settings.strict,
             "privacy_mode": settings.privacy_mode,
             "limit": len(samples),
         },
-        "git_sha": git_sha(),
+        "git_sha": current_sha,
+        "git_shas": contributing_shas,
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "samples_seen": len(samples),
         "samples_written": written,

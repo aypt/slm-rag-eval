@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from slm_rag_eval.bench.datasets import LabeledSample, load
 from slm_rag_eval.bench.run import (
+    IncompatibleResumeError,
     app,
     apply_privacy_mode,
     build_judge,
@@ -228,3 +229,73 @@ def test_cli_rejects_an_unknown_privacy_mode() -> None:
 
     assert result.exit_code != 0
     assert "'typo' is not one of 'mask', 'off'" in result.output.replace("\n", "")
+
+
+async def _run(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
+    """Score one sample into tmp_path with an easily varied configuration."""
+    samples = _samples(1)
+    judge = FakeLLMClient()
+    _script_faithfulness(judge, samples)
+    kwargs: dict[str, Any] = {
+        "dataset": "halueval",
+        "judge_name": "slm",
+        "model": "synthetic-slm",
+        "settings": _settings(),
+        "metrics": ["faithfulness"],
+    }
+    kwargs.update(overrides)
+    return await run_benchmark(samples, judge=judge, out_dir=tmp_path, **kwargs)
+
+
+async def test_resume_records_the_run_identity_and_contributing_commits(
+    tmp_path: Path,
+) -> None:
+    manifest = await _run(tmp_path)
+
+    assert manifest["run_identity"] == {
+        "dataset": "halueval",
+        "judge": "slm",
+        "model": "synthetic-slm",
+        "metrics": ["faithfulness"],
+        "k": 1,
+        "strict": True,
+        "privacy_mode": "off",
+    }
+    assert manifest["git_shas"] == [manifest["git_sha"]]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model", "a-different-model"),
+        ("metrics", ["faithfulness", "relevance"]),
+        ("settings", None),  # replaced below with different scoring parameters
+    ],
+)
+async def test_resume_refuses_a_changed_configuration(
+    tmp_path: Path, field: str, value: Any
+) -> None:
+    """Appending rows scored under different settings would make the file unattributable."""
+    await _run(tmp_path)
+
+    override = {field: value} if field != "settings" else {"settings": _settings(k=3)}
+    with pytest.raises(IncompatibleResumeError, match="different configuration"):
+        await _run(tmp_path, **override)
+
+
+async def test_resume_requires_a_manifest_it_can_check(tmp_path: Path) -> None:
+    await _run(tmp_path)
+    _, manifest_path = output_paths(tmp_path, "halueval", "slm")
+    manifest_path.unlink()
+
+    with pytest.raises(IncompatibleResumeError, match="cannot be verified"):
+        await _run(tmp_path)
+
+
+async def test_resume_accepts_an_unchanged_configuration(tmp_path: Path) -> None:
+    first = await _run(tmp_path)
+    second = await _run(tmp_path)
+
+    assert second["samples_skipped"] == 1
+    assert second["samples_written"] == 0
+    assert second["run_identity"] == first["run_identity"]
