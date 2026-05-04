@@ -45,7 +45,7 @@ class ThresholdMetrics:
 
 @dataclass
 class JudgeReport:
-    """Everything computed for a single judge."""
+    """Everything computed for a single reporting series."""
 
     judge: str
     model: str
@@ -59,6 +59,13 @@ class JudgeReport:
     latency_median_ms: float | None
     latency_p95_ms: float | None
     mean_tokens: dict[str, float] = field(default_factory=dict)
+    label: str = ""
+    datasets: tuple[str, ...] = ()
+
+    @property
+    def series(self) -> str:
+        """Name used in tables and figures; equals the judge unless it had to be qualified."""
+        return self.label or self.judge
 
 
 def load_rows(paths: Iterable[Path]) -> pd.DataFrame:
@@ -127,6 +134,40 @@ def _ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
 
 
+SERIES_COLUMN = "series"
+
+
+def assign_series(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add the reporting-series column: the judge, qualified when it spans models/datasets.
+
+    Grouping on `judge` alone silently pools rows from different models or different
+    datasets into one set of metrics and labels them with whichever model appeared first.
+    A judge that stays on one model and one dataset keeps its plain name, so the common
+    case reads exactly as before.
+    """
+    spans = frame.groupby("judge").agg(
+        models=("model", "nunique"), datasets=("dataset", "nunique")
+    )
+
+    def label(row: pd.Series) -> str:
+        judge = str(row["judge"])
+        parts = [judge]
+        if spans.loc[judge, "models"] > 1:
+            parts.append(f":{row['model']}")
+        if spans.loc[judge, "datasets"] > 1:
+            parts.append(f"@{row['dataset']}")
+        return "".join(parts)
+
+    labelled = frame.copy()
+    labelled[SERIES_COLUMN] = labelled.apply(label, axis=1)
+    return labelled
+
+
+def _series_column(frame: pd.DataFrame) -> str:
+    """Fall back to `judge` for frames that were not passed through `assign_series`."""
+    return SERIES_COLUMN if SERIES_COLUMN in frame.columns else "judge"
+
+
 def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
     """Sweep thresholds, pick the best-F1 one, and summarize efficiency for one judge."""
     scored = frame[frame["faithfulness"].notna()]
@@ -143,9 +184,13 @@ def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
         roc_auc = float(roc_auc_score(labels, [-score for score in scores]))
 
     latencies = frame["latency_ms"].dropna().to_numpy(dtype=float)
+    models = sorted({str(value) for value in frame["model"].dropna().unique()})
     return JudgeReport(
         judge=str(frame["judge"].iloc[0]),
-        model=str(frame["model"].iloc[0]),
+        # Every row in a series shares one model; joining is a visible signal if it ever does not.
+        model=" + ".join(models) if models else "unknown",
+        label=str(frame[_series_column(frame)].iloc[0]),
+        datasets=tuple(sorted({str(value) for value in frame["dataset"].dropna().unique()})),
         scored=len(scored),
         unscored=int(frame["faithfulness"].isna().sum()),
         positives=sum(labels),
@@ -216,11 +261,15 @@ def analyze_agreement(
     return agreements
 
 
-def _scored_by_sample(frame: pd.DataFrame, judge: str) -> dict[str, float]:
-    subset = frame[(frame["judge"] == judge) & (frame["faithfulness"].notna())]
+def _scored_by_sample(frame: pd.DataFrame, series: str) -> dict[tuple[str, str], float]:
+    """Scores keyed by (dataset, sample_id): the same id in two datasets is two samples."""
+    column = _series_column(frame)
+    subset = frame[(frame[column] == series) & (frame["faithfulness"].notna())]
     return {
-        str(sample_id): float(score)
-        for sample_id, score in zip(subset["sample_id"], subset["faithfulness"], strict=True)
+        (str(dataset), str(sample_id)): float(score)
+        for dataset, sample_id, score in zip(
+            subset["dataset"], subset["sample_id"], subset["faithfulness"], strict=True
+        )
     }
 
 
@@ -271,7 +320,8 @@ def plot_roc_curves(frame: pd.DataFrame, reports: dict[str, JudgeReport], out_di
     styles = ("-", "--", "-.", ":")
     plotted = False
     for index, (judge, report) in enumerate(sorted(reports.items())):
-        scored = frame[(frame["judge"] == judge) & (frame["faithfulness"].notna())]
+        column = _series_column(frame)
+        scored = frame[(frame[column] == judge) & (frame["faithfulness"].notna())]
         labels = [bool(value) for value in scored["label_hallucinated"]]
         if len(set(labels)) != 2:
             continue
@@ -301,13 +351,14 @@ def plot_roc_curves(frame: pd.DataFrame, reports: dict[str, JudgeReport], out_di
 
 def plot_score_distributions(frame: pd.DataFrame, out_dir: Path) -> Path:
     """Faithfulness histograms, one panel per judge, on a shared 0–1 axis."""
-    judges = sorted(frame["judge"].dropna().unique())
+    column = _series_column(frame)
+    judges = sorted(frame[column].dropna().unique())
     figure, axes_list = plt.subplots(
         len(judges), 1, figsize=(6, 3 * max(len(judges), 1)), squeeze=False, sharex=True
     )
     bins = np.linspace(0, 1, 11)
     for axes, judge in zip(axes_list[:, 0], judges, strict=True):
-        scored = frame[(frame["judge"] == judge) & (frame["faithfulness"].notna())]
+        scored = frame[(frame[column] == judge) & (frame["faithfulness"].notna())]
         axes.hist(scored["faithfulness"].to_numpy(dtype=float), bins=bins)
         axes.set_title(f"{judge} faithfulness")
         axes.set_ylabel("Samples")
@@ -318,9 +369,10 @@ def plot_score_distributions(frame: pd.DataFrame, out_dir: Path) -> Path:
 
 def plot_latency_box(frame: pd.DataFrame, out_dir: Path) -> Path:
     """Per-sample latency spread per judge."""
-    judges = sorted(frame["judge"].dropna().unique())
+    column = _series_column(frame)
+    judges = sorted(frame[column].dropna().unique())
     series = [
-        frame[frame["judge"] == judge]["latency_ms"].dropna().to_numpy(dtype=float)
+        frame[frame[column] == judge]["latency_ms"].dropna().to_numpy(dtype=float)
         for judge in judges
     ]
     figure, axes = plt.subplots(figsize=(6, 4))
@@ -373,7 +425,7 @@ def render_summary(
             ["Judge", "Model", "Scored", "Unscored", "Best t", "P", "R", "F1", "BA", "ROC-AUC"],
             [
                 [
-                    report.judge,
+                    report.series,
                     report.model,
                     str(report.scored),
                     str(report.unscored),
@@ -392,7 +444,7 @@ def render_summary(
 
     for report in reports.values():
         sections += [
-            f"### {report.judge}: threshold sweep",
+            f"### {report.series}: threshold sweep",
             "",
             _markdown_table(
                 ["t", "TP", "FP", "FN", "TN", "P", "R", "F1", "BA"],
@@ -444,7 +496,7 @@ def render_summary(
             ["Judge", "Median latency (ms)", "p95 latency (ms)", "Mean tokens", "Est. cost (USD)"],
             [
                 [
-                    report.judge,
+                    report.series,
                     _format(report.latency_median_ms, 1),
                     _format(report.latency_p95_ms, 1),
                     _format(report.mean_tokens.get("total_tokens"), 1),
@@ -477,9 +529,10 @@ def analyze(
     out_dir.mkdir(parents=True, exist_ok=True)
     cost_model = costs or CostModel()
 
+    frame = assign_series(frame)
     reports = {
-        str(judge): analyze_judge(frame[frame["judge"] == judge])
-        for judge in sorted(frame["judge"].dropna().unique())
+        str(series): analyze_judge(frame[frame[SERIES_COLUMN] == series])
+        for series in sorted(frame[SERIES_COLUMN].dropna().unique())
     }
     agreements = analyze_agreement(frame, reports)
     figures = [

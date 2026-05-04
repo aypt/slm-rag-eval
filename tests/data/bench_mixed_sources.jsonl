@@ -1,0 +1,6 @@
+{"sample_id": "1", "dataset": "alpha", "judge": "slm", "model": "model-a", "label_hallucinated": false, "scores": {"faithfulness": 1.0}, "verdicts": [], "latency_ms": 10.0, "usage": {"total_tokens": 100}}
+{"sample_id": "2", "dataset": "alpha", "judge": "slm", "model": "model-a", "label_hallucinated": true, "scores": {"faithfulness": 0.0}, "verdicts": [], "latency_ms": 20.0, "usage": {"total_tokens": 100}}
+{"sample_id": "1", "dataset": "beta", "judge": "slm", "model": "model-b", "label_hallucinated": true, "scores": {"faithfulness": 0.9}, "verdicts": [], "latency_ms": 30.0, "usage": {"total_tokens": 300}}
+{"sample_id": "2", "dataset": "beta", "judge": "slm", "model": "model-b", "label_hallucinated": false, "scores": {"faithfulness": 0.1}, "verdicts": [], "latency_ms": 40.0, "usage": {"total_tokens": 300}}
+{"sample_id": "1", "dataset": "alpha", "judge": "cloud", "model": "cloud-x", "label_hallucinated": false, "scores": {"faithfulness": 0.8}, "verdicts": [], "latency_ms": 200.0, "usage": {"total_tokens": 500}}
+{"sample_id": "2", "dataset": "alpha", "judge": "cloud", "model": "cloud-x", "label_hallucinated": true, "scores": {"faithfulness": 0.2}, "verdicts": [], "latency_ms": 400.0, "usage": {"total_tokens": 500}}
