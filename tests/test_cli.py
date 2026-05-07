@@ -147,7 +147,18 @@ def test_batch_writes_one_row_per_input_line(
     assert result.exit_code == 0
     rows = [json.loads(line) for line in out_file.read_text().splitlines()]
     assert [row["sample_id"] for row in rows] == ["a", "b"]
-    assert set(rows[0]) == {"sample_id", "model", "scores", "verdicts", "latency_ms", "usage"}
+    assert set(rows[0]) == {
+        "sample_id",
+        "dataset",
+        "judge",
+        "model",
+        "scores",
+        "verdicts",
+        "latency_ms",
+        "usage",
+    }
+    assert rows[0]["dataset"] == "batch"  # the input file stem
+    assert rows[0]["judge"] == "cli"
     # The bench schema minus the human label, which a CLI batch has no way to know.
     assert "label_hallucinated" not in rows[0]
     assert rows[0]["scores"]["faithfulness"] == 1.0
@@ -199,3 +210,35 @@ def test_demo_transcript_matches_the_documented_output(
     )
     documented = (Path(__file__).resolve().parents[1] / "docs" / "demo.md").read_text()
     assert transcript.strip() in documented
+
+
+def test_batch_output_can_be_analyzed_by_the_bench_analysis(
+    scripted_cli: FakeLLMClient, tmp_path: Path
+) -> None:
+    """The README promises batch rows feed the same analysis as bench.run — prove it."""
+    from slm_rag_eval.bench.analyze import analyze
+
+    for _ in range(2):
+        _script(scripted_cli)
+    input_file = tmp_path / "questions.jsonl"
+    input_file.write_text(
+        "\n".join(
+            json.dumps({"id": name, "question": "Q?", "answer": CLAIM, "contexts": ["ctx"]})
+            for name in ("a", "b")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_file = tmp_path / "rows.jsonl"
+
+    assert runner.invoke(cli.app, ["batch", str(input_file), "--out", str(out_file)]).exit_code == 0
+
+    outcome = analyze([out_file], tmp_path / "report")
+
+    # Grouping needs `judge`; keying samples needs `dataset`. Missing either used to make
+    # this call produce an empty report or fail outright.
+    assert list(outcome["reports"]) == ["cli"]
+    report = outcome["reports"]["cli"]
+    assert report.scored == 2
+    assert report.datasets == ("questions",)
+    assert (tmp_path / "report" / "summary.md").exists()

@@ -123,6 +123,12 @@ def batch(
     metric: Annotated[
         list[str] | None, typer.Option(help="Repeatable; defaults to the configured metrics.")
     ] = None,
+    dataset: Annotated[
+        str | None, typer.Option(help="Dataset name for the rows; defaults to the file stem.")
+    ] = None,
+    judge_name: Annotated[
+        str, typer.Option("--judge-name", help="Judge label recorded in each row.")
+    ] = "cli",
 ) -> None:
     """Evaluate every row of a JSONL file, writing bench-shaped rows (without labels)."""
     settings = get_settings()
@@ -140,7 +146,12 @@ def batch(
             result = _evaluate(EvalRequest.model_validate(payload), judge, settings, metrics)
             rows.append(
                 batch_row(
-                    sample_id, result, model=settings.model, latency_ms=total_latency_ms(result)
+                    sample_id,
+                    result,
+                    model=settings.model,
+                    latency_ms=total_latency_ms(result),
+                    dataset=dataset or input_file.stem,
+                    judge=judge_name,
                 )
             )
 

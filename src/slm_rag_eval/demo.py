@@ -93,10 +93,19 @@ def batch_row(
     *,
     model: str,
     latency_ms: float,
+    dataset: str = "cli",
+    judge: str = "cli",
 ) -> dict[str, Any]:
-    """One `rageval batch` output row: the bench.run schema minus the human label."""
+    """One `rageval batch` output row: the bench.run schema minus the human label.
+
+    `dataset` and `judge` are part of that schema, not decoration: the analysis groups
+    series by judge and keys samples by (dataset, sample_id), so rows without them cannot
+    be analyzed at all.
+    """
     return {
         "sample_id": sample_id,
+        "dataset": dataset,
+        "judge": judge,
         "model": model,
         "scores": score_summary(result),
         "verdicts": [verdict.model_dump() for verdict in result.verdicts],

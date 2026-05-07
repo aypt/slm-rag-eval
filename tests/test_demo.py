@@ -112,7 +112,16 @@ def test_verdict_table_is_aligned_and_truncated() -> None:
 def test_batch_row_matches_the_bench_schema_without_a_label() -> None:
     row = batch_row("sample-1", _result(), model="synthetic-slm", latency_ms=20.0)
 
-    assert set(row) == {"sample_id", "model", "scores", "verdicts", "latency_ms", "usage"}
+    assert set(row) == {
+        "sample_id",
+        "dataset",
+        "judge",
+        "model",
+        "scores",
+        "verdicts",
+        "latency_ms",
+        "usage",
+    }
     assert row["sample_id"] == "sample-1"
     assert row["scores"] == {"faithfulness": 0.5, "relevance": None}
     assert row["verdicts"][0]["verdict"] == "supported"
