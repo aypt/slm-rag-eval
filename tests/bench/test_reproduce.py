@@ -90,3 +90,31 @@ def test_reproduce_writes_rows_and_a_report(
     assert (tmp_path / "summary.md").exists()
     assert (tmp_path / "roc_curves.png").exists()
     assert (tmp_path / "rows" / "reproduce_stub.jsonl").exists()
+
+
+def test_builtin_fallback_provides_the_documented_run_size() -> None:
+    """`make reproduce` claims a 20-sample bench; the offline path must deliver one."""
+    from slm_rag_eval.bench.reproduce import SAMPLE_COUNT, _builtin_samples
+
+    samples = _builtin_samples()
+
+    assert len(samples) == SAMPLE_COUNT == 20
+    assert len({sample.id for sample in samples}) == SAMPLE_COUNT
+    # Balanced labels, or every threshold metric would be degenerate.
+    assert sum(sample.label_hallucinated for sample in samples) == SAMPLE_COUNT // 2
+    assert all(sample.contexts for sample in samples)
+
+
+def test_reproduce_scores_twenty_samples_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SLMEVAL_PRIVACY_MODE", "off")
+    monkeypatch.setattr(
+        "slm_rag_eval.bench.reproduce.judge_is_reachable", lambda settings, **kwargs: False
+    )
+
+    manifest = reproduce(out_dir=tmp_path, data_dir=tmp_path / "no-datasets-here")
+
+    assert manifest["samples_seen"] == 20
+    assert manifest["samples_written"] == 20
+    assert manifest["failure_count"] == 0

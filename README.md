@@ -412,9 +412,9 @@ pytest -q
 $ make reproduce
 http://localhost:11434/v1 is not reachable — running the OFFLINE STUB judge.
 The report this writes is a smoke test, not an evaluation result.
-scoring 4 samples with the stub judge (offline-stub)
+scoring 20 samples with the stub judge (offline-stub)
 ...
-"samples_written": "4", "failure_count": "0"
+"samples_written": "20", "failure_count": "0"
 report: report/repro/summary.md
 ```
 

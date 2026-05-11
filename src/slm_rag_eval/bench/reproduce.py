@@ -104,25 +104,92 @@ def reproduction_samples(settings: Settings, data_dir: Path | None = None) -> li
     return _builtin_samples()
 
 
+# Ten invented records, each yielding a faithful and an altered answer: SAMPLE_COUNT samples
+# with a balanced label distribution, so a fresh clone reproduces the documented run size
+# without downloading anything. Entirely fictional — no dataset text, no personal data.
+_BUILTIN_RECORDS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "How many instruments did the probe carry?",
+        "The probe carried three instruments.",
+        "The probe carried three instruments.",
+        "The probe carried seven instruments.",
+    ),
+    (
+        "When did the probe launch?",
+        "The probe launched in 2019.",
+        "The probe launched in 2019.",
+        "The probe launched in 1998.",
+    ),
+    (
+        "What shields the module?",
+        "The module is protected by a ceramic shield.",
+        "The module uses a ceramic shield.",
+        "The module uses a copper shield.",
+    ),
+    (
+        "How long did the survey run?",
+        "The survey ran for eleven weeks.",
+        "The survey ran for eleven weeks.",
+        "The survey ran for a single weekend.",
+    ),
+    (
+        "Where is the relay station?",
+        "The relay station sits on the northern ridge.",
+        "The relay station sits on the northern ridge.",
+        "The relay station sits in the harbour district.",
+    ),
+    (
+        "What powers the sensor array?",
+        "The sensor array runs on a thermal battery.",
+        "The sensor array runs on a thermal battery.",
+        "The sensor array runs on mains electricity.",
+    ),
+    (
+        "How many tremors were recorded?",
+        "Three tremors were recorded on Tuesday.",
+        "Three tremors were recorded on Tuesday.",
+        "Twelve tremors were recorded on Tuesday.",
+    ),
+    (
+        "Who maintains the archive?",
+        "The archive is maintained by the records office.",
+        "The archive is maintained by the records office.",
+        "The archive is maintained by an outside contractor.",
+    ),
+    (
+        "What was the reported damage?",
+        "No damage was reported after the tremors.",
+        "No damage was reported.",
+        "Two buildings collapsed.",
+    ),
+    (
+        "Why was the alloy chosen?",
+        "The alloy was chosen for its heat tolerance.",
+        "The alloy was chosen for its heat tolerance.",
+        "The alloy was chosen because it was cheapest.",
+    ),
+)
+
+
 def _builtin_samples() -> list[LabeledSample]:
-    """Four invented samples so a fresh clone can reproduce without downloading anything."""
-    facts = [
-        ("The probe carried three instruments.", "The probe carried three instruments.", False),
-        ("The probe carried seven instruments.", "The probe carried three instruments.", True),
-        ("The launch happened in 2019.", "The launch happened in 2019.", False),
-        ("The launch happened in 1998.", "The launch happened in 2019.", True),
-    ]
-    return [
-        LabeledSample(
-            id=f"builtin-{index}",
-            question="What do the records say about the probe?",
-            answer=answer,
-            contexts=[context],
-            label_hallucinated=hallucinated,
-            meta={"dataset": "builtin-synthetic"},
-        )
-        for index, (answer, context, hallucinated) in enumerate(facts)
-    ]
+    """Invented samples so a fresh clone can reproduce the full run size offline."""
+    samples: list[LabeledSample] = []
+    for index, (question, context, faithful, altered) in enumerate(_BUILTIN_RECORDS):
+        for suffix, answer, hallucinated in (
+            ("faithful", faithful, False),
+            ("altered", altered, True),
+        ):
+            samples.append(
+                LabeledSample(
+                    id=f"builtin-{index}-{suffix}",
+                    question=question,
+                    answer=answer,
+                    contexts=[context],
+                    label_hallucinated=hallucinated,
+                    meta={"dataset": "builtin-synthetic"},
+                )
+            )
+    return samples[:SAMPLE_COUNT]
 
 
 def reproduce(out_dir: Path = Path("report/repro"), data_dir: Path | None = None) -> dict[str, Any]:
