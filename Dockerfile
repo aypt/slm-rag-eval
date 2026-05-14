@@ -11,10 +11,11 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md constraints.txt ./
 COPY src ./src
 
-RUN pip install ".[postgres]" \
+# -c pins the same versions the test suite and the benchmark report were produced with.
+RUN pip install ".[postgres]" -c constraints.txt \
     && python -m spacy download en_core_web_lg
 
 

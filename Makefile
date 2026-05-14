@@ -2,7 +2,7 @@
 	next-task all-tasks
 
 setup:
-	pip install -e ".[dev,analysis]"
+	pip install -e ".[dev,analysis]" -c constraints.txt
 	python -m spacy download en_core_web_lg
 
 lint:

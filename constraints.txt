@@ -1,6 +1,8 @@
-# Exact versions verified together by `make check` and `make reproduce` on 2026-08-05
-# (Python 3.12 dev container). Regenerate with:  pip freeze --exclude-editable | sort
-# Use with:  pip install -e ".[dev,analysis]" -c constraints.txt
+# Exact versions this repository was verified with: `make check`, `make reproduce`, and the
+# fresh-clone walkthrough all ran against these. Covers every extra (dev, analysis, demo,
+# postgres) so the Docker image and CI install the same set.
+# Regenerate with:  pip install -e ".[dev,analysis,demo,postgres]" && pip freeze --exclude-editable | sort
+# Use with:  pip install -e ".[dev,analysis]" -c constraints.txt   (this is what `make setup` does)
 Jinja2==3.1.6
 MarkupSafe==3.0.3
 PyYAML==6.0.3
@@ -12,6 +14,7 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
 ast_serialize==0.6.0
+asyncpg==0.31.0
 attrs==26.1.0
 blinker==1.9.0
 blis==1.3.3
