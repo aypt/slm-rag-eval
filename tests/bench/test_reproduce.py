@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -60,6 +61,39 @@ def test_reachable_backend_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert judge_is_reachable(Settings(_env_file=None)) is True
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404, 429, 500, 503])
+def test_only_a_successful_models_response_counts_as_reachable(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    """A judge that answers 401 or 404 is not usable: every sample would fail instead."""
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *args, **kwargs: httpx.Response(status_code, request=httpx.Request("GET", "/")),
+    )
+
+    assert judge_is_reachable(Settings(_env_file=None)) is False
+
+
+def test_the_probe_carries_the_configured_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def record(url: str, **kwargs: Any) -> httpx.Response:
+        seen.update(url=url, headers=kwargs.get("headers"))
+        return httpx.Response(200, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", record)
+
+    assert judge_is_reachable(Settings(_env_file=None, api_key="synthetic-key")) is True
+    assert seen["headers"] == {"Authorization": "Bearer synthetic-key"}
+    assert seen["url"].endswith("/models")
+
+    # No key configured means no header, not an empty one.
+    seen.clear()
+    judge_is_reachable(Settings(_env_file=None, api_key=None))
+    assert seen["headers"] == {}
 
 
 def test_samples_prefer_a_downloaded_dataset_then_fall_back(tmp_path: Path) -> None:

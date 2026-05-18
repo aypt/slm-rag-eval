@@ -86,12 +86,22 @@ def _claims_to_verify(prompt: str) -> list[str] | None:
 
 
 def judge_is_reachable(settings: Settings, timeout_s: float = 2.0) -> bool:
-    """True when the configured backend answers at all; any failure means 'use the stub'."""
+    """True only when the models endpoint answers successfully with the configured auth.
+
+    Anything less is not a usable judge: a 401/403 means the key is wrong, a 404 means the
+    endpoint is not there, and either way every sample would fail one by one instead of
+    falling back to the stub.
+    """
+    headers = {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
     try:
-        response = httpx.get(f"{settings.base_url.rstrip('/')}/models", timeout=timeout_s)
+        response = httpx.get(
+            f"{settings.base_url.rstrip('/')}/models",
+            timeout=timeout_s,
+            headers=headers,
+        )
     except httpx.HTTPError:
         return False
-    return response.status_code < 500
+    return response.status_code == 200
 
 
 def reproduction_samples(settings: Settings, data_dir: Path | None = None) -> list[LabeledSample]:
