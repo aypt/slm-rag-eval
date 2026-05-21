@@ -58,6 +58,25 @@ fail the run. Therefore:
 6. Never fit evaluation logic (claim extraction, verification, scoring, thresholds)
    to specific benchmark examples.
 
+### Standing exceptions (approved 2026-08-06, after review)
+
+Two task specs required work these rules forbid. Rather than leaving the conflict to be
+re-discovered, the exceptions are written down. They are narrow, and each only ever ADDS
+strictness or additive files:
+
+- **New files under `scripts/`** are allowed when a task spec names the path (M07 required
+  `scripts/download_ragtruth.py` and `scripts/download_halueval.py`). Modifying or deleting
+  an existing script — above all the runner — stays forbidden. Note the runner's own smell
+  check still flags any `scripts/` change, so such a task cannot pass unattended: the human
+  files it.
+- **Tightening type-checking config** is allowed when a task spec requires it (M10 required
+  `disallow_untyped_defs` for `core/`, `llm/`, `metrics/`). Loosening any check — disabling
+  rules, adding ignores, relaxing an existing setting — stays forbidden, as does touching
+  pytest/ruff configuration or the `check`/`lint`/`type`/`test` targets.
+
+Anything outside these two carve-outs still follows the blocked-report path above. A note in
+PROGRESS.md is documentation, not authorization.
+
 ## Other hard rules
 1. **Unit tests never touch the network or a real model.** All judge calls in tests go
    through the `FakeLLMClient` fixture (`tests/conftest.py`), which records every
