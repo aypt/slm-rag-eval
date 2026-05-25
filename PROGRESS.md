@@ -403,3 +403,64 @@ Open TODO for M06: `.env.example` does not exist yet; M06 requirement 3 creates 
       Presidio). Nothing broke, so nothing needed fixing; the transcript is quoted verbatim in the
       README under "Verified fresh-clone walkthrough".
 - [x] `make check` green: ruff and mypy passed (28 source files); pytest reported 126 passed.
+
+## Review round 1 (2026-08-06) — nine defects found by an independent audit, all fixed
+An external review re-checked every task against its spec. Nine findings were reproduced
+here before any change was made; all nine were real. One commit per fix.
+
+- [x] **M02, high — verdict misattribution.** `_verify_batch` checked only the verdict
+      *count*, then zipped positionally and overwrote the judge's echoed `claim`. Reproduced
+      with a two-claim batch answered in reverse order: the supported claim was reported
+      unsupported and vice versa. Alignment is now verified against the echoed claim
+      (whitespace/case-insensitive only), re-asked once naming the offending item, and a batch
+      that stays misaligned raises rather than guessing. No reordering: silently repairing the
+      judge's answer would hide the protocol violation
+      (`tests/metrics/test_verdict_alignment.py`, 5 tests covering reordered, duplicated,
+      substituted, and re-spaced echoes).
+- [x] **M06, medium — worker permanently unhealthy.** api and worker share an image whose
+      HEALTHCHECK probes `/healthz`, which only api serves. The worker now disables the
+      inherited check (`test_worker_does_not_inherit_the_api_healthcheck`).
+- [x] **M07, high — `--privacy-mode` typo silently disabled masking.** The flag took an
+      arbitrary string and reached Settings through `model_copy(update=...)`, which skips
+      validation; the registry treats every non-`mask` value as off. Verified that `"typo"`
+      was accepted. Now a `StrEnum` at the CLI plus `Settings.model_validate` in
+      `apply_privacy_mode`, so both paths reject it (3 tests).
+- [x] **M07, high — resume could mix configurations.** Rows were keyed only on
+      dataset/judge and resumed on `sample_id`, so changing model, metrics, `k`, `strict`, or
+      privacy mode kept old rows, skipped their ids, and overwrote the manifest — an
+      unattributable results file. `run_identity` is now recorded and checked before
+      appending; a mismatch raises `IncompatibleResumeError`, rows without a checkable
+      manifest are refused, and `git_shas` accumulates across compatible resumes (4 tests).
+- [x] **M08, high — datasets and models pooled.** Grouping was by `judge` alone, the group
+      took its model from the first row, and agreement keyed on `sample_id` only, so identical
+      ids in different datasets were treated as one sample. Rows now carry a reporting series
+      (judge, qualified by model and/or dataset only when it spans more than one) and
+      agreement is keyed on `(dataset, sample_id)`. The new fixture makes pooling visible: the
+      same judge is perfect on one dataset and exactly inverted on the other
+      (`tests/bench/test_analyze_mixed_sources.py`, 4 tests).
+- [x] **M09, high — `rageval batch` output was not the bench schema.** `dataset` and `judge`
+      were missing, so the rows the README calls analysis-ready could not be grouped or keyed.
+      Both are emitted now (dataset defaults to the input file stem, judge to `cli`, both
+      overridable), and a test runs `rageval batch` and feeds its output straight into
+      `bench.analyze`. Two assertions written alongside the defect earlier in this session were
+      updated to the larger, correct key set — strengthened, never loosened.
+- [x] **M10, high — `make reproduce` ran 4 samples, not 20.** `SAMPLE_COUNT` was 20 but the
+      built-in offline set held four records; the README transcript said `scoring 4 samples`.
+      The set is now ten invented records × (faithful, altered) = 20 balanced samples, sliced
+      to `SAMPLE_COUNT` so the two cannot drift; the transcript is regenerated (2 tests).
+- [x] **M10, high — dependencies were not actually pinned.** `constraints.txt` existed but
+      `make setup`, CI (via `make setup`), and the Dockerfile all ignored it, so the
+      fresh-clone walkthrough verified whatever pip resolved that day. All three now install
+      with `-c constraints.txt`, and the file was regenerated with every extra installed so
+      `asyncpg` and `streamlit` are pinned too. A `--python-version 3.11` dry run confirms all
+      108 pins resolve for CI and the `python:3.11-slim` image.
+- [x] **M10, high — reachability probe was too permissive.** It accepted any status below 500
+      and sent no credentials, so a backend answering 401/403/404 was chosen as the live judge
+      and every sample failed instead of falling back to the stub. It now sends the configured
+      api_key and requires 200 (2 tests, 6 statuses).
+- [x] **Process.** The reviewer is right that M07's `scripts/` files and M10's mypy tightening
+      should have been reported `BLOCKED` rather than implemented with a PROGRESS note. The two
+      exceptions are now written into AGENTS.md, scoped to additive files and added strictness
+      only; `tasks/` is left untouched because editing it is itself forbidden.
+- [x] `make check` green after every commit; final state: ruff and mypy clean (28 source
+      files), pytest 155 passed.
