@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 from collections import Counter
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, RootModel
 
-from slm_rag_eval.core.schemas import ClaimVerdict, EvalRequest, EvalResult
+from slm_rag_eval.core.schemas import (
+    ClaimVerdict,
+    DistinctNonBlankList,
+    EvalRequest,
+    EvalResult,
+    NonBlankStr,
+)
 from slm_rag_eval.llm.client import LLMClient, LLMResponse
 from slm_rag_eval.llm.structured import generate_json
 
@@ -50,12 +56,25 @@ Rules:
 
 
 class Claims(BaseModel):
-    """Atomic factual claims extracted from an answer."""
+    """Atomic factual claims extracted from an answer.
 
-    claims: list[str]
+    Blank and repeated claims are rejected rather than accepted: both are schema-valid ways
+    for a weak judge to corrupt the score, and `generate_json` turns the rejection into a
+    repair turn that tells the model exactly what was wrong.
+    """
+
+    claims: DistinctNonBlankList
 
 
-class _ClaimVerdicts(RootModel[list[ClaimVerdict]]):
+class _VerdictItem(BaseModel):
+    """One verdict exactly as the judge returned it, before alignment to a claim."""
+
+    claim: NonBlankStr
+    verdict: Literal["supported", "unsupported", "uncertain"]
+    reason: NonBlankStr
+
+
+class _ClaimVerdicts(RootModel[list[_VerdictItem]]):
     """Schema wrapper for a batch of index-aligned verdicts."""
 
 
@@ -74,7 +93,7 @@ class _RecordingClient:
         *,
         json_schema: dict[str, Any] | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Delegate to the wrapped client, accumulating token usage and model name."""
         response = await self._client.complete(
@@ -143,7 +162,7 @@ def _normalized(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def _batch_problem(claims: list[str], verdicts: list[ClaimVerdict]) -> str | None:
+def _batch_problem(claims: list[str], verdicts: list[_VerdictItem]) -> str | None:
     """Describe the first contract violation in a verdict batch, or None if it is sound.
 
     The prompt requires one item per claim, in claim index order, with the claim copied

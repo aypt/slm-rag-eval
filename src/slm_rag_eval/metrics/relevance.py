@@ -8,7 +8,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from slm_rag_eval.core.schemas import EvalRequest, EvalResult
+from slm_rag_eval.core.schemas import (
+    DistinctNonBlankList,
+    EvalRequest,
+    EvalResult,
+    NonBlankStr,
+)
 from slm_rag_eval.llm.client import LLMClient, LLMResponse
 from slm_rag_eval.llm.structured import generate_json
 
@@ -40,16 +45,22 @@ Rules:
 
 
 class GeneratedQuestions(BaseModel):
-    """The three questions inferred from an answer."""
+    """The three questions inferred from an answer.
 
-    questions: list[str] = Field(min_length=_QUESTION_COUNT, max_length=_QUESTION_COUNT)
+    Counting alone is not enough: three blank strings, or the same question three times,
+    satisfy a length check and then average to a perfect relevance score.
+    """
+
+    questions: DistinctNonBlankList = Field(
+        min_length=_QUESTION_COUNT, max_length=_QUESTION_COUNT
+    )
 
 
 class QuestionRating(BaseModel):
     """Similarity judgment for one generated question."""
 
     rating: Literal[0, 1, 2]
-    reason: str
+    reason: NonBlankStr
 
 
 class QuestionRatings(BaseModel):
@@ -76,7 +87,7 @@ class _RecordingClient:
         *,
         json_schema: dict[str, Any] | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Delegate to the wrapped client, accumulating token usage and model name."""
         response = await self._client.complete(

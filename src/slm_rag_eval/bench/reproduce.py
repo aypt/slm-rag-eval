@@ -43,7 +43,7 @@ class OfflineStubJudge:
         *,
         json_schema: dict[str, Any] | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Answer whichever structured request was asked, without judging anything."""
         self.calls += 1
@@ -58,7 +58,9 @@ class OfflineStubJudge:
                 for claim in claims_to_verify
             ]
         elif "questions" in json.dumps(json_schema or {}):
-            payload = {"questions": ["offline stub question"] * 3}
+            # Distinct on purpose: the schema rejects repeats, because a judge that returns
+            # the same question three times would otherwise average to a perfect score.
+            payload = {"questions": [f"offline stub question {index}" for index in range(1, 4)]}
         elif "ratings" in json.dumps(json_schema or {}):
             payload = {"ratings": [{"rating": 0, "reason": "offline stub: not rated"}] * 3}
         else:
@@ -69,7 +71,10 @@ class OfflineStubJudge:
 def _sentences(prompt: str) -> list[str]:
     tail = prompt.strip().splitlines()[-1] if prompt.strip() else ""
     parts = [part.strip() for part in _SENTENCE_END.split(tail) if part.strip()]
-    return parts[:5] or ["offline stub claim"]
+    # Deduplicated because the claim schema rejects repeats: a repeated sentence in the
+    # source text must not become a claim counted twice.
+    unique = list(dict.fromkeys(parts))
+    return unique[:5] or ["offline stub claim"]
 
 
 def _claims_to_verify(prompt: str) -> list[str] | None:
