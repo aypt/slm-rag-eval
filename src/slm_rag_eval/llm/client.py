@@ -10,6 +10,7 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from slm_rag_eval.core.config import Settings
+from slm_rag_eval.llm.errors import JudgeRefusalError, TruncatedResponseError
 
 
 @dataclass
@@ -31,9 +32,13 @@ class LLMClient(Protocol):
         *,
         json_schema: dict[str, Any] | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
-        """Generate one completion, optionally constrained to a JSON schema."""
+        """Generate one completion, optionally constrained to a JSON schema.
+
+        `max_tokens=None` means "use the configured budget", so the limit is one setting
+        rather than a constant repeated at every call site.
+        """
         ...
 
 
@@ -65,14 +70,15 @@ class OpenAICompatClient:
         *,
         json_schema: dict[str, Any] | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Generate one completion, retrying only transient transport failures."""
+        token_budget = max_tokens if max_tokens is not None else self._settings.max_tokens
         payload: dict[str, Any] = {
             "model": self._settings.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": token_budget,
         }
         if json_schema is not None:
             schema_name = str(json_schema.get("title") or "response")
@@ -106,14 +112,19 @@ class OpenAICompatClient:
         if response is None:  # Defensive: AsyncRetrying always makes at least one attempt.
             raise RuntimeError("The completion request was not attempted")
         latency_ms = (perf_counter() - started) * 1000
-        return self._normalize_response(response, latency_ms)
+        return self._normalize_response(response, latency_ms, token_budget)
 
     async def aclose(self) -> None:
         """Close the internally-created HTTP client, if this instance owns it."""
         if self._owns_http_client:
             await self._http_client.aclose()
 
-    def _normalize_response(self, response: httpx.Response, latency_ms: float) -> LLMResponse:
+    def _normalize_response(
+        self,
+        response: httpx.Response,
+        latency_ms: float,
+        max_tokens: int,
+    ) -> LLMResponse:
         try:
             body = response.json()
             if not isinstance(body, dict):
@@ -127,11 +138,25 @@ class OpenAICompatClient:
             message = first_choice["message"]
             if not isinstance(message, dict):
                 raise TypeError("choice message is not an object")
-            text = message["content"]
-            if not isinstance(text, str):
-                raise TypeError("choice content is not text")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Malformed chat-completions response body") from exc
+
+        # A refusal and a truncation are both well-formed responses that simply carry no
+        # content. Reporting them as "malformed" would blame the backend for two outcomes
+        # the protocol defines, and would hide the one the operator can actually fix.
+        refusal = message.get("refusal")
+        if isinstance(refusal, str) and refusal.strip():
+            raise JudgeRefusalError(f"The judge refused to answer: {refusal.strip()}")
+
+        if first_choice.get("finish_reason") == "length":
+            raise TruncatedResponseError(
+                f"The judge stopped at the {max_tokens}-token budget before finishing its "
+                "response, so the JSON is incomplete. Raise SLMEVAL_MAX_TOKENS."
+            )
+
+        text = message.get("content")
+        if not isinstance(text, str):
+            raise ValueError("Malformed chat-completions response body")
 
         usage: dict[str, int] = {}
         raw_usage = body.get("usage")

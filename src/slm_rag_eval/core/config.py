@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     max_retries: int = Field(
         default=3, ge=1, description="Attempts for transient transport failures."
     )
+    max_tokens: int = Field(
+        default=2048,
+        ge=1,
+        description="Completion token budget per judge call; raise it for long contexts.",
+    )
     enabled_metrics: list[str] = Field(
         default_factory=lambda: ["faithfulness"],
         description="Metrics the registry runs by default (JSON list).",
