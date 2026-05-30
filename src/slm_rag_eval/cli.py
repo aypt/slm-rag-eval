@@ -22,7 +22,7 @@ from slm_rag_eval.demo import (
 )
 from slm_rag_eval.llm import build_client
 from slm_rag_eval.llm.client import LLMClient
-from slm_rag_eval.metrics.registry import evaluate
+from slm_rag_eval.metrics.registry import evaluate, validate_metric_selection
 
 app = typer.Typer(help="slm-rag-eval — privacy-preserving RAG evaluation with SLM judges.")
 
@@ -57,22 +57,42 @@ def _load_request(
     return EvalRequest(question=question, answer=answer, contexts=list(contexts or []))
 
 
+async def _evaluate_async(
+    request: EvalRequest,
+    judge: LLMClient,
+    settings: Settings,
+    metrics: list[str],
+) -> EvalResult:
+    return await evaluate(
+        request,
+        judge=judge,
+        metrics=metrics,
+        k=settings.k,
+        strict=settings.strict,
+        settings=settings,
+    )
+
+
+async def _aclose(judge: LLMClient) -> None:
+    """Close a judge client that owns transport resources; fakes simply have no `aclose`."""
+    aclose = getattr(judge, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
 def _evaluate(
     request: EvalRequest,
     judge: LLMClient,
     settings: Settings,
     metrics: list[str],
 ) -> EvalResult:
-    return asyncio.run(
-        evaluate(
-            request,
-            judge=judge,
-            metrics=metrics,
-            k=settings.k,
-            strict=settings.strict,
-            settings=settings,
-        )
-    )
+    async def once() -> EvalResult:
+        try:
+            return await _evaluate_async(request, judge, settings, metrics)
+        finally:
+            await _aclose(judge)
+
+    return asyncio.run(once())
 
 
 @app.command(name="eval")
@@ -133,9 +153,12 @@ def batch(
     """Evaluate every row of a JSONL file, writing bench-shaped rows (without labels)."""
     settings = get_settings()
     metrics = list(metric) if metric else list(settings.enabled_metrics)
-    judge = judge_factory(settings)
+    try:
+        validate_metric_selection(metrics)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
-    rows: list[dict[str, Any]] = []
+    requests: list[tuple[str, EvalRequest]] = []
     with input_file.open(encoding="utf-8") as handle:
         for index, line in enumerate(handle):
             stripped = line.strip()
@@ -143,17 +166,33 @@ def batch(
                 continue
             payload = json.loads(stripped)
             sample_id = str(payload.pop("id", index))
-            result = _evaluate(EvalRequest.model_validate(payload), judge, settings, metrics)
-            rows.append(
-                batch_row(
-                    sample_id,
-                    result,
-                    model=settings.model,
-                    latency_ms=total_latency_ms(result),
-                    dataset=dataset or input_file.stem,
-                    judge=judge_name,
+            requests.append((sample_id, EvalRequest.model_validate(payload)))
+
+    async def evaluate_all() -> list[dict[str, Any]]:
+        # One event loop for the whole batch. A fresh `asyncio.run()` per row closes the
+        # loop the shared HTTP client's connection pool is bound to, so the second row
+        # against a keep-alive backend — every real judge — died with "Event loop is
+        # closed". Fakes never showed it: they hold no connection.
+        judge = judge_factory(settings)
+        try:
+            collected: list[dict[str, Any]] = []
+            for sample_id, request in requests:
+                result = await _evaluate_async(request, judge, settings, metrics)
+                collected.append(
+                    batch_row(
+                        sample_id,
+                        result,
+                        model=settings.model,
+                        latency_ms=total_latency_ms(result),
+                        dataset=dataset or input_file.stem,
+                        judge=judge_name,
+                    )
                 )
-            )
+            return collected
+        finally:
+            await _aclose(judge)
+
+    rows = asyncio.run(evaluate_all())
 
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as handle:
