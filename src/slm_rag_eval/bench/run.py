@@ -9,6 +9,7 @@ data to it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -16,7 +17,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 
 import typer
 
@@ -25,7 +26,7 @@ from slm_rag_eval.core.config import Settings, get_settings
 from slm_rag_eval.core.schemas import EvalRequest
 from slm_rag_eval.llm import build_client
 from slm_rag_eval.llm.client import LLMClient
-from slm_rag_eval.metrics.registry import evaluate
+from slm_rag_eval.metrics.registry import evaluate, validate_metric_selection
 
 JUDGES = ("slm", "cloud")
 
@@ -54,6 +55,9 @@ def run_identity(
     `limit` is excluded on purpose — extending a run to more samples is the whole point of
     resuming. The judge, the model, the metric set, and the scoring parameters are not:
     mixing them produces a file whose rows cannot all be attributed to one configuration.
+
+    This is the core identity. `run_environment` carries the rest of what has to match;
+    both are checked on resume and both feed `run_id`.
     """
     return {
         "dataset": dataset,
@@ -66,10 +70,36 @@ def run_identity(
     }
 
 
+def run_environment(settings: Settings) -> dict[str, Any]:
+    """The rest of the configuration that changes what a score means.
+
+    `privacy_mode` alone does not describe the masking: the entity list and the confidence
+    threshold decide what the judge was actually shown, so a mask-on/mask-off ablation is
+    only interpretable when they are pinned too. `max_tokens` belongs here because it
+    decides whether long samples truncate, and `base_url` because the same model name
+    served by two endpoints is two different instruments.
+    """
+    return {
+        "base_url": settings.base_url,
+        "max_tokens": settings.max_tokens,
+        "privacy_entities": sorted(settings.privacy_entities),
+        "privacy_score_threshold": settings.privacy_score_threshold,
+    }
+
+
+def run_id(identity: dict[str, Any], environment: dict[str, Any]) -> str:
+    """Short stable fingerprint of a run, used to keep incomparable rows from being pooled."""
+    canonical = json.dumps(
+        {"identity": identity, "environment": environment}, sort_keys=True, ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 def check_resume_compatibility(
     rows_path: Path,
     manifest_path: Path,
     identity: dict[str, Any],
+    environment: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Refuse to append to rows produced under a different configuration.
 
@@ -96,6 +126,18 @@ def check_resume_compatibility(
         for key, value in identity.items()
         if previous_identity.get(key) != value
     ]
+    if environment is not None:
+        previous_environment = previous.get("run_environment")
+        if previous_environment is None:
+            raise IncompatibleResumeError(
+                f"{manifest_path} predates run-environment tracking, so a resume cannot be "
+                "verified. Move the rows aside or use a new --out."
+            )
+        differences += [
+            f"{key}: {previous_environment.get(key)!r} -> {value!r}"
+            for key, value in environment.items()
+            if previous_environment.get(key) != value
+        ]
     if differences:
         raise IncompatibleResumeError(
             "Refusing to resume into rows scored with a different configuration ("
@@ -189,6 +231,28 @@ def _token_usage(model_info: dict[str, Any]) -> dict[str, int]:
     return totals
 
 
+def _returned_models(model_info: dict[str, Any]) -> set[str]:
+    """Model names the backend actually reported, which can differ from the one configured.
+
+    A routed or aliased cloud endpoint answers as whatever it picked, so recording only the
+    configured string would misattribute the result to a model that never ran.
+    """
+    returned: set[str] = set()
+    for metric_info in model_info.values():
+        if isinstance(metric_info, dict):
+            name = metric_info.get("model")
+            if isinstance(name, str) and name and name != "unknown":
+                returned.add(name)
+    return returned
+
+
+class SampleOutcome(NamedTuple):
+    """One scored sample: the row to write, plus what the backend said it was."""
+
+    row: dict[str, Any]
+    models_returned: set[str]
+
+
 async def evaluate_sample(
     sample: LabeledSample,
     *,
@@ -198,7 +262,7 @@ async def evaluate_sample(
     model: str,
     metrics: list[str],
     settings: Settings,
-) -> dict[str, Any]:
+) -> SampleOutcome:
     """Score one sample and shape it into the benchmark row schema."""
     started = perf_counter()
     result = await evaluate(
@@ -214,7 +278,7 @@ async def evaluate_sample(
     scores: dict[str, float | None] = {"faithfulness": result.faithfulness}
     if "relevance" in metrics:
         scores["relevance"] = result.relevance
-    return {
+    row = {
         "sample_id": sample.id,
         "dataset": dataset,
         "judge": judge_name,
@@ -225,6 +289,7 @@ async def evaluate_sample(
         "latency_ms": latency_ms,
         "usage": _token_usage(result.model_info),
     }
+    return SampleOutcome(row=row, models_returned=_returned_models(result.model_info))
 
 
 async def run_benchmark(
@@ -243,18 +308,21 @@ async def run_benchmark(
     out_dir.mkdir(parents=True, exist_ok=True)
     rows_path, manifest_path = output_paths(out_dir, dataset, judge_name)
 
+    validate_metric_selection(selected)
     identity = run_identity(dataset, judge_name, model, selected, settings)
-    previous = check_resume_compatibility(rows_path, manifest_path, identity)
+    environment = run_environment(settings)
+    previous = check_resume_compatibility(rows_path, manifest_path, identity, environment)
     already_done = completed_sample_ids(rows_path)
     written = 0
     failures: list[dict[str, str]] = []
+    models_returned: set[str] = set()
 
     with rows_path.open("a", encoding="utf-8") as handle:
         for sample in samples:
             if sample.id in already_done:
                 continue
             try:
-                row = await evaluate_sample(
+                outcome = await evaluate_sample(
                     sample,
                     judge=judge,
                     dataset=dataset,
@@ -264,11 +332,17 @@ async def run_benchmark(
                     settings=settings,
                 )
             except Exception as exc:
-                # Fail soft: one bad sample must not end a 200-sample run.
-                failures.append({"sample_id": sample.id, "error": f"{type(exc).__name__}: {exc}"})
+                # Fail soft: one bad sample must not end a 200-sample run. The failure is
+                # recorded in the manifest with the sample id, and the analysis reads the
+                # manifest to report coverage — a judge that fails selectively on hard or
+                # hallucinated samples must not be able to look more accurate by having
+                # those samples quietly missing from the rows file.
+                error = f"{type(exc).__name__}: {exc}"
+                failures.append({"sample_id": sample.id, "error": error})
                 typer.echo(f"sample {sample.id} failed: {exc}", err=True)
                 continue
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            models_returned.update(outcome.models_returned)
+            handle.write(json.dumps(outcome.row, ensure_ascii=False) + "\n")
             handle.flush()
             written += 1
 
@@ -283,8 +357,11 @@ async def run_benchmark(
         "dataset": dataset,
         "judge": judge_name,
         "model": model,
+        "models_returned": sorted(models_returned),
         "metrics": selected,
         "run_identity": identity,
+        "run_environment": environment,
+        "run_id": run_id(identity, environment),
         "params": {
             "k": settings.k,
             "strict": settings.strict,
@@ -293,6 +370,7 @@ async def run_benchmark(
         },
         "git_sha": current_sha,
         "git_shas": contributing_shas,
+        "git_dirty": git_dirty(),
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "samples_seen": len(samples),
         "samples_written": written,
@@ -307,16 +385,32 @@ async def run_benchmark(
 
 def git_sha() -> str | None:
     """Current commit, or None outside a git checkout — recorded for reproducibility."""
+    return _git(["rev-parse", "HEAD"]) or None
+
+
+def git_dirty() -> bool | None:
+    """Whether the checkout has uncommitted changes, or None outside a git checkout.
+
+    A commit sha alone does not identify the code that produced a number: rows scored from
+    a dirty tree are not reproducible from that sha, and the report has to be able to say so.
+    """
+    status = _git(["status", "--porcelain"])
+    if status is None:
+        return None
+    return bool(status)
+
+
+def _git(arguments: list[str]) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", *arguments],
             capture_output=True,
             text=True,
             check=True,
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return completed.stdout.strip() or None
+    return completed.stdout.strip()
 
 
 @app.command()
@@ -339,6 +433,15 @@ def main(
     """Run one judge over one dataset and write results/<dataset>_<judge>.jsonl."""
     settings = apply_privacy_mode(get_settings(), privacy_mode.value if privacy_mode else None)
 
+    # Checked before anything expensive starts. Inside the run this same error would be
+    # caught by the fail-soft loop once per sample, so a typo would burn a whole run and
+    # still exit 0 with a manifest full of failures.
+    selected = list(metric) if metric else list(settings.enabled_metrics)
+    try:
+        validate_metric_selection(selected)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     samples = load(dataset, limit, data_dir=data_dir)
     client, judge_settings = build_judge(judge, settings)
 
@@ -351,7 +454,7 @@ def main(
             model=judge_settings.model,
             out_dir=out,
             settings=judge_settings,
-            metrics=list(metric) if metric else None,
+            metrics=selected,
         )
     )
     typer.echo(json.dumps(manifest, indent=2, ensure_ascii=False))

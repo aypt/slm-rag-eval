@@ -58,6 +58,22 @@ def validate_metrics(metrics: list[str]) -> None:
         )
 
 
+def validate_metric_selection(metrics: list[str]) -> None:
+    """Reject a selection that cannot produce a result, before any work starts.
+
+    `validate_metrics` alone is not enough for a batch runner: it only rejects unknown
+    names, and it runs per sample inside a fail-soft loop, so a typo shows up as every
+    sample failing while the command still exits 0. An empty selection is worse — it
+    succeeds and scores nothing.
+    """
+    if not metrics:
+        available = ", ".join(_AVAILABLE_METRICS)
+        raise ValueError(
+            f"No metrics selected, so nothing would be scored. Available metrics: {available}"
+        )
+    validate_metrics(metrics)
+
+
 @lru_cache(maxsize=8)
 def _default_sanitizer(entities: tuple[str, ...], score_threshold: float) -> Sanitizer:
     return Sanitizer(entities=entities, score_threshold=score_threshold)

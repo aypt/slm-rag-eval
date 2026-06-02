@@ -61,6 +61,10 @@ class JudgeReport:
     mean_tokens: dict[str, float] = field(default_factory=dict)
     label: str = ""
     datasets: tuple[str, ...] = ()
+    unlabeled: int = 0
+    """Rows with a score but no human label; excluded from every quality metric."""
+    failed: int = 0
+    """Samples that produced no row at all, counted from the run manifests."""
 
     @property
     def series(self) -> str:
@@ -68,11 +72,70 @@ class JudgeReport:
         return self.label or self.judge
 
 
+def manifest_path_for(rows_path: Path) -> Path:
+    """The manifest `bench.run` writes beside a rows file."""
+    return rows_path.with_name(f"{rows_path.stem}.manifest.json")
+
+
+@dataclass(frozen=True)
+class RunProvenance:
+    """What the manifest beside a rows file says about how those rows were produced."""
+
+    run_id: str | None
+    failure_count: int
+    failures: tuple[str, ...]
+    git_sha: str | None
+    git_dirty: bool | None
+
+    @property
+    def fingerprint(self) -> str:
+        """Series qualifier: rows from different run ids are not comparable."""
+        return self.run_id or ""
+
+
+def load_provenance(rows_path: Path) -> RunProvenance:
+    """Read the manifest beside `rows_path`; absent or unreadable means unknown provenance."""
+    path = manifest_path_for(rows_path)
+    if not path.exists():
+        return RunProvenance(None, 0, (), None, None)
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return RunProvenance(None, 0, (), None, None)
+    if not isinstance(manifest, dict):
+        return RunProvenance(None, 0, (), None, None)
+
+    raw_failures = manifest.get("failures")
+    failures = tuple(
+        str(item.get("sample_id"))
+        for item in (raw_failures if isinstance(raw_failures, list) else [])
+        if isinstance(item, dict)
+    )
+    count = manifest.get("failure_count")
+    run_id = manifest.get("run_id")
+    dirty = manifest.get("git_dirty")
+    sha = manifest.get("git_sha")
+    return RunProvenance(
+        run_id=run_id if isinstance(run_id, str) else None,
+        failure_count=count if isinstance(count, int) else len(failures),
+        failures=failures,
+        git_sha=sha if isinstance(sha, str) else None,
+        git_dirty=dirty if isinstance(dirty, bool) else None,
+    )
+
+
 def load_rows(paths: Iterable[Path]) -> pd.DataFrame:
-    """Read benchmark JSONL files into one flat frame."""
+    """Read benchmark JSONL files into one flat frame, carrying each file's provenance.
+
+    A row with no `label_hallucinated` key is *unlabeled*, not negative. Coercing a missing
+    label with `bool()` turned every unlabeled row — every row `rageval batch` writes — into
+    a human-verified non-hallucination, which then scored as a true negative.
+    """
     records: list[dict[str, Any]] = []
     for path in paths:
-        with Path(path).open(encoding="utf-8") as handle:
+        rows_path = Path(path)
+        provenance = load_provenance(rows_path)
+        with rows_path.open(encoding="utf-8") as handle:
             for line in handle:
                 stripped = line.strip()
                 if not stripped:
@@ -80,19 +143,23 @@ def load_rows(paths: Iterable[Path]) -> pd.DataFrame:
                 row = json.loads(stripped)
                 scores = row.get("scores") or {}
                 usage = row.get("usage") or {}
+                raw_label = row.get("label_hallucinated")
                 records.append(
                     {
                         "sample_id": str(row["sample_id"]),
                         "dataset": row.get("dataset"),
                         "judge": row.get("judge"),
                         "model": row.get("model"),
-                        "label_hallucinated": bool(row.get("label_hallucinated")),
+                        "label_hallucinated": None if raw_label is None else bool(raw_label),
                         "faithfulness": scores.get("faithfulness"),
                         "relevance": scores.get("relevance"),
                         "latency_ms": row.get("latency_ms"),
                         "prompt_tokens": usage.get("prompt_tokens", 0),
                         "completion_tokens": usage.get("completion_tokens", 0),
                         "total_tokens": usage.get("total_tokens", 0),
+                        "run_id": provenance.run_id,
+                        "run_failures": provenance.failure_count,
+                        "source_path": str(rows_path),
                     }
                 )
     if not records:
@@ -145,9 +212,14 @@ def assign_series(frame: pd.DataFrame) -> pd.DataFrame:
     A judge that stays on one model and one dataset keeps its plain name, so the common
     case reads exactly as before.
     """
-    spans = frame.groupby("judge").agg(
-        models=("model", "nunique"), datasets=("dataset", "nunique")
-    )
+    aggregations: dict[str, tuple[str, str]] = {
+        "models": ("model", "nunique"),
+        "datasets": ("dataset", "nunique"),
+    }
+    has_run_id = "run_id" in frame.columns
+    if has_run_id:
+        aggregations["runs"] = ("run_id", "nunique")
+    spans = frame.groupby("judge").agg(**aggregations)
 
     def label(row: pd.Series) -> str:
         judge = str(row["judge"])
@@ -156,6 +228,11 @@ def assign_series(frame: pd.DataFrame) -> pd.DataFrame:
             parts.append(f":{row['model']}")
         if spans.loc[judge, "datasets"] > 1:
             parts.append(f"@{row['dataset']}")
+        # Two runs of the same judge, model and dataset still differ if anything in the run
+        # fingerprint differs — privacy mode above all. Pooling a masked run with an
+        # unmasked one would average the ablation away instead of measuring it.
+        if has_run_id and spans.loc[judge, "runs"] > 1 and row["run_id"]:
+            parts.append(f"#{row['run_id']}")
         return "".join(parts)
 
     labelled = frame.copy()
@@ -168,11 +245,32 @@ def _series_column(frame: pd.DataFrame) -> str:
     return SERIES_COLUMN if SERIES_COLUMN in frame.columns else "judge"
 
 
+def _failed_samples(frame: pd.DataFrame) -> int:
+    """Samples the judge could not score at all, per the manifests behind these rows.
+
+    A failed sample writes no row, so it is invisible in the JSONL. Counting it here keeps
+    the denominator honest: a judge that fails on the samples it finds hardest would
+    otherwise post better numbers precisely because the hard cases went missing.
+    """
+    if "run_failures" not in frame.columns or "source_path" not in frame.columns:
+        return 0
+    per_file = frame.drop_duplicates(subset="source_path")["run_failures"]
+    return int(per_file.fillna(0).sum())
+
+
+def _labeled_scored(frame: pd.DataFrame) -> pd.DataFrame:
+    """Rows that carry both a judge score and a human label — the only ones quality uses."""
+    return frame[frame["faithfulness"].notna() & frame["label_hallucinated"].notna()]
+
+
 def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
     """Sweep thresholds, pick the best-F1 one, and summarize efficiency for one judge."""
     scored = frame[frame["faithfulness"].notna()]
-    labels = [bool(value) for value in scored["label_hallucinated"]]
-    scores = [float(value) for value in scored["faithfulness"]]
+    # Detection quality needs a ground truth. Rows with a score but no label are reported
+    # separately instead of being folded in as negatives.
+    labeled = _labeled_scored(frame)
+    labels = [bool(value) for value in labeled["label_hallucinated"]]
+    scores = [float(value) for value in labeled["faithfulness"]]
 
     sweep = [threshold_metrics(labels, scores, threshold) for threshold in THRESHOLDS]
     # Ties go to the lower threshold: fewer positives for the same F1.
@@ -193,6 +291,8 @@ def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
         datasets=tuple(sorted({str(value) for value in frame["dataset"].dropna().unique()})),
         scored=len(scored),
         unscored=int(frame["faithfulness"].isna().sum()),
+        unlabeled=int(frame["label_hallucinated"].isna().sum()),
+        failed=_failed_samples(frame),
         positives=sum(labels),
         negatives=len(labels) - sum(labels),
         sweep=sweep,
@@ -244,9 +344,9 @@ def analyze_agreement(
                 calls_b = [score < best_b.threshold for score in scores_b]
                 if len(set(calls_a)) > 1 or len(set(calls_b)) > 1:
                     kappa = float(cohen_kappa_score(calls_a, calls_b))
-                elif calls_a == calls_b:
-                    # Both judges made one constant, identical call: perfect but degenerate.
-                    kappa = 1.0
+                # When neither judge varies, kappa is undefined: chance agreement is 1, so
+                # the correction divides by zero. It is reported as n/a rather than as
+                # perfect agreement, which is what a constant-vs-constant 1.0 would claim.
 
             agreements.append(
                 AgreementReport(
@@ -321,7 +421,7 @@ def plot_roc_curves(frame: pd.DataFrame, reports: dict[str, JudgeReport], out_di
     plotted = False
     for index, (judge, report) in enumerate(sorted(reports.items())):
         column = _series_column(frame)
-        scored = frame[(frame[column] == judge) & (frame["faithfulness"].notna())]
+        scored = _labeled_scored(frame[frame[column] == judge])
         labels = [bool(value) for value in scored["label_hallucinated"]]
         if len(set(labels)) != 2:
             continue
@@ -419,16 +519,38 @@ def render_summary(
         "Predicted hallucinated when `faithfulness < threshold`. Rows the judge could not "
         "score are reported as *unscored* and excluded from every threshold metric.",
         "",
+        "*Coverage* columns are part of the result, not bookkeeping. **Unscored** rows "
+        "produced no score, **Unlabeled** rows carry no human label (both are excluded from "
+        "every quality metric), and **Failed** samples produced no row at all — they come "
+        "from the run manifests, because a sample that is missing from the rows file would "
+        "otherwise shrink the denominator invisibly. Quote P/R/F1 together with these "
+        "counts or the numbers describe an unstated subset.",
+        "",
         "## Detection quality at the best-F1 threshold",
         "",
         _markdown_table(
-            ["Judge", "Model", "Scored", "Unscored", "Best t", "P", "R", "F1", "BA", "ROC-AUC"],
+            [
+                "Judge",
+                "Model",
+                "Scored",
+                "Unscored",
+                "Unlabeled",
+                "Failed",
+                "Best t",
+                "P",
+                "R",
+                "F1",
+                "BA",
+                "ROC-AUC",
+            ],
             [
                 [
                     report.series,
                     report.model,
                     str(report.scored),
                     str(report.unscored),
+                    str(report.unlabeled),
+                    str(report.failed),
                     _format(report.best.threshold, 2) if report.best else "n/a",
                     _format(report.best.precision) if report.best else "n/a",
                     _format(report.best.recall) if report.best else "n/a",
