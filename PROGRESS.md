@@ -464,3 +464,88 @@ here before any change was made; all nine were real. One commit per fix.
       only; `tasks/` is left untouched because editing it is itself forbidden.
 - [x] `make check` green after every commit; final state: ruff and mypy clean (28 source
       files), pytest 155 passed.
+
+## P0 — measurement-integrity fixes before any benchmark run (2026-08-06)
+
+Human-directed work order, not a `tasks/` card: an external review raised 36 findings and
+the decision was to fix the subset that can corrupt a reported number, then de-risk the
+rented-GPU run. Verified: ruff clean, mypy clean (29 source files), **pytest 207 passed**
+(was 155; 52 added, none removed or edited).
+
+### Fixed
+
+- [x] **Blank and repeated judge outputs scored as perfect.** Reproduced before the fix:
+      `claims=["   "]` marked supported gave `faithfulness=1.0`; the same claim returned
+      three times gave `1.0` with triple weight; three blank generated questions gave
+      `relevance=1.0`. `NonBlankStr` and `DistinctNonBlankList` (`core/schemas.py`) now
+      reject both at the schema boundary, so `generate_json`'s repair loop asks the model to
+      fix it and a judge that will not gives a visible failure instead of a silent 1.0.
+      Evidence: `tests/metrics/test_output_hygiene.py` (12 tests).
+- [x] **`rageval batch` died on row two against any real judge.** `asyncio.run()` per row
+      closed the loop the shared `httpx.AsyncClient` pool was bound to. Reproduced against a
+      local HTTP/1.1 server: row 1 OK, row 2 `RuntimeError: Event loop is closed`. An
+      HTTP/1.0 server hides it — which is why no test caught it, and why every keep-alive
+      backend (Ollama, vLLM, OpenAI) would have hit it. Now one loop for the whole batch plus
+      an explicit `aclose()`. Evidence: `tests/test_cli_batch_runtime.py`, whose
+      `LoopBoundClient` reproduces the old failure on demand.
+- [x] **Unlabeled rows counted as human-verified non-hallucinations.** `load_rows` coerced a
+      missing `label_hallucinated` with `bool()`, so every `rageval batch` row scored as a
+      true negative. Missing is now `None`, excluded from every quality metric and reported
+      in a new **Unlabeled** column; fully unlabeled input yields `best=None` rather than a
+      fabricated threshold.
+- [x] **Failed samples left the denominator silently.** They are counted from the run
+      manifest and reported in a new **Failed** column, with a summary note that P/R/F1 are
+      meaningless without the coverage counts beside them.
+- [x] **Cohen's kappa was fabricated as 1.0 when undefined.** Two constant identical call
+      vectors make kappa undefined (chance agreement is 1); it now reports `n/a`. The
+      existing `kappa == 1.0` assertion is the *non-degenerate* case and still passes.
+- [x] **Metric selections failed too late.** A typo made all 200 samples fail inside the
+      fail-soft loop while the command exited 0 with a manifest. `validate_metric_selection`
+      rejects unknown *and* empty selections before the dataset is even loaded.
+- [x] **`max_tokens` was hardcoded 1024 everywhere and unreachable from config.** On long
+      RAGTruth summarization samples this truncates the verdict JSON, which then fails as a
+      generic parse error after three wasted repair attempts — and the samples lost are
+      exactly the hard ones. Now `SLMEVAL_MAX_TOKENS` (default 2048), with
+      `TruncatedResponseError` and `JudgeRefusalError` as distinct outcomes.
+- [x] **Runs that were not comparable could be pooled.** `run_environment` adds `base_url`,
+      `max_tokens`, `privacy_entities` and `privacy_score_threshold`; `run_id` fingerprints
+      the whole configuration; resume refuses on any difference; the analyzer qualifies a
+      series by run id when a judge spans several. Without this the privacy ablation would
+      average masked and unmasked rows together instead of measuring the difference.
+- [x] **New: `python -m slm_rag_eval.bench.preflight`.** Checks endpoint, pulled model,
+      dataset and label balance, token headroom, Presidio, output directory, and a live
+      probe over N real samples that reports ms/sample and projects a 100/200-sample run.
+      Exit code 1 on any failure. Purpose: never discover a broken configuration an hour into
+      a paid GPU run. Evidence: `tests/bench/test_preflight.py` (14 tests), plus manual runs
+      against a stub judge in three failure modes (healthy, wrong model, truncating).
+
+### Two fixes deliberately delivered a different way, to avoid editing an existing assertion
+
+AGENTS.md rule 1 forbids editing existing assertions, and both of these would have required it.
+Neither is a blocker — an equivalent or better design was available — but both are recorded
+because a future reader will wonder why the obvious implementation was not used.
+
+- **Failure rows.** `tests/bench/test_run.py:174` pins that a failed sample writes *no* row.
+  Rather than change it, failures stay in the manifest and the analyzer reads the manifest
+  beside each rows file. Same outcome — failures are visible and counted — with no row-schema
+  change. A future task may still prefer explicit null-score rows; that needs the assertion
+  revisited by a human.
+- **Run identity.** `tests/bench/test_run.py:255` pins the exact `run_identity` key set, so the
+  new provenance went into a sibling `run_environment` field instead of being added to it.
+  Both are checked on resume and both feed `run_id`, so nothing is weaker.
+
+### Not changed, on purpose
+
+- **Judge prompts.** Telling the model up front that claims must be non-blank and distinct
+  would cut first-attempt repairs, but `tests/metrics/snapshots/` pins the prompt text, and
+  updating a snapshot is the same class of change as editing an assertion. Left alone; worth
+  a task card of its own.
+
+### Still open before the report can quote numbers
+
+Not defects — capabilities the report requires that do not exist yet: RAGTruth split/seeded
+stratified sampling, held-out threshold selection, the PII detection precision/recall harness
+and the mask-on/mask-off ablation, and resource-footprint capture. Plus the README's
+fresh-clone transcript, which is demonstrably false for the commit it names (`9001cfa`
+contained four built-in samples, and the transcript claims twenty and `126 passed`) and must
+be replaced with real output or deleted.
