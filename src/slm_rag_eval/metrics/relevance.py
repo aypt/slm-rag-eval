@@ -26,6 +26,8 @@ Rules:
 - Use only information stated in the answer.
 - Each question must be concise, self-contained, and directly answerable by the answer.
 - Do not introduce facts, entities, or assumptions that are absent from the answer.
+- The three questions must be different from each other; never repeat one.
+- Never return an empty or whitespace-only question.
 - Return only JSON matching {"questions": ["question", "question", "question"]}.
 """
 

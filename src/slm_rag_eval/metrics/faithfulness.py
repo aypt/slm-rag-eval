@@ -30,6 +30,8 @@ Rules:
 - Make each claim atomic. Split conjoined facts into separate claims.
 - Copy numbers, dates, and names verbatim from the answer.
 - Keep enough wording that each claim can be checked independently.
+- Never return an empty or whitespace-only claim.
+- Never repeat a claim. If the answer states the same fact twice, return it once.
 
 Example 1
 Answer: "Ada Lovelace wrote notes in 1843 and translated an article by Luigi Menabrea."
@@ -52,6 +54,7 @@ Rules:
 - Use unsupported when the context contradicts the claim or supports a different value.
 - Use uncertain when the context is missing or insufficient.
 - Give one concise sentence for reason, grounded in the context.
+- Never leave claim or reason empty.
 """
 
 

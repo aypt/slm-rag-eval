@@ -8,6 +8,8 @@ Rules:
 - Make each claim atomic. Split conjoined facts into separate claims.
 - Copy numbers, dates, and names verbatim from the answer.
 - Keep enough wording that each claim can be checked independently.
+- Never return an empty or whitespace-only claim.
+- Never repeat a claim. If the answer states the same fact twice, return it once.
 
 Example 1
 Answer: "Ada Lovelace wrote notes in 1843 and translated an article by Luigi Menabrea."

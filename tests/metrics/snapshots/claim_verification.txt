@@ -10,6 +10,7 @@ Rules:
 - Use unsupported when the context contradicts the claim or supports a different value.
 - Use uncertain when the context is missing or insufficient.
 - Give one concise sentence for reason, grounded in the context.
+- Never leave claim or reason empty.
 
 
 [user]
