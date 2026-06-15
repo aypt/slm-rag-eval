@@ -171,7 +171,17 @@ async def test_one_failing_sample_does_not_end_the_run(tmp_path: Path) -> None:
     assert manifest["failures"][0]["sample_id"] == samples[0].id
     assert "backend exploded" in manifest["failures"][0]["error"]
     assert manifest["samples_written"] == 1
-    assert [row["sample_id"] for row in rows] == [samples[1].id]
+    # Both samples are present. The failed one used to write no row at all, which removed
+    # it from the analysis as well as from the file: a judge that fails on the samples it
+    # finds hardest would then score better precisely because they went missing. It is now
+    # written with null scores and the error, so the denominator stays honest.
+    assert [row["sample_id"] for row in rows] == [samples[0].id, samples[1].id]
+    failed_row, scored_row = rows
+    assert failed_row["scores"]["faithfulness"] is None
+    assert "backend exploded" in failed_row["error"]
+    assert failed_row["label_hallucinated"] == samples[0].label_hallucinated
+    assert scored_row["scores"]["faithfulness"] == 1.0
+    assert "error" not in scored_row
 
 
 def test_cloud_judge_requires_explicit_configuration(monkeypatch: pytest.MonkeyPatch) -> None:

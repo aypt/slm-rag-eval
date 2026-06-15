@@ -72,22 +72,23 @@ def _write(path: Path, rows: list[dict[str, Any]], manifest: dict[str, Any] | No
 # --- coverage -----------------------------------------------------------------------
 
 
-def test_failed_samples_are_counted_from_the_manifest_not_lost(tmp_path: Path) -> None:
-    """A failed sample writes no row; the manifest is the only place it survives."""
+def test_failed_samples_are_counted_and_never_scored(tmp_path: Path) -> None:
+    """A failed sample is a row with null scores and an error, not a missing row."""
+    failed = [
+        _row(sample_id=f"s{n}", scores={"faithfulness": None}, error="RuntimeError: boom")
+        for n in (3, 4, 5)
+    ]
     rows_path = _write(
         tmp_path / "d_slm.jsonl",
-        [_row(sample_id="s1"), _row(sample_id="s2", label_hallucinated=True)],
-        manifest={
-            "run_id": "abc123",
-            "failure_count": 3,
-            "failures": [{"sample_id": f"s{n}", "error": "boom"} for n in (3, 4, 5)],
-        },
+        [_row(sample_id="s1"), _row(sample_id="s2", label_hallucinated=True), *failed],
+        manifest={"run_id": "abc123", "failure_count": 3, "failures": []},
     )
 
     report = analyze_judge(load_rows([rows_path]))
 
-    assert report.scored == 2
-    assert report.failed == 3, "the three samples that produced no row must still be counted"
+    assert report.scored == 2, "a failed sample must never count as scored"
+    assert report.unscored == 3
+    assert report.failed == 3, "the three failures must stay visible in the denominator"
 
 
 def test_a_missing_manifest_reports_no_failures_rather_than_guessing(tmp_path: Path) -> None:

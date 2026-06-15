@@ -147,25 +147,49 @@ def check_resume_compatibility(
     return previous
 
 
-def completed_sample_ids(rows_path: Path) -> set[str]:
-    """Sample ids already written, so a resumed run can skip them."""
+def read_rows(rows_path: Path) -> list[dict[str, Any]]:
+    """Every parseable row in the file. A half-written final line is skipped, not fatal."""
     if not rows_path.exists():
-        return set()
-    done: set[str] = set()
+        return []
+    rows: list[dict[str, Any]] = []
     with rows_path.open(encoding="utf-8") as handle:
         for line in handle:
             stripped = line.strip()
             if not stripped:
                 continue
             try:
-                row = json.loads(stripped)
+                parsed = json.loads(stripped)
             except json.JSONDecodeError:
                 # A partially written final line must not abort the resume.
                 continue
-            sample_id = row.get("sample_id")
-            if sample_id is not None:
-                done.add(str(sample_id))
-    return done
+            if isinstance(parsed, dict):
+                rows.append(parsed)
+    return rows
+
+
+def completed_sample_ids(rows_path: Path) -> set[str]:
+    """Sample ids already written, so a resumed run can skip them."""
+    return {
+        str(row["sample_id"]) for row in read_rows(rows_path) if row.get("sample_id") is not None
+    }
+
+
+def drop_failed_rows(rows_path: Path) -> set[str]:
+    """Remove failed rows from the file so a resume re-scores them. Returns their ids.
+
+    A failed row is a real record and must not be silently overwritten, but a transient
+    backend hiccup should not force a 200-sample re-run either. Dropping the rows here —
+    and only when the operator asks — keeps exactly one row per sample.
+    """
+    rows = read_rows(rows_path)
+    retryable = {str(row["sample_id"]) for row in rows if row.get("error") is not None}
+    if not retryable:
+        return set()
+    kept = [row for row in rows if row.get("error") is None]
+    rows_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in kept), encoding="utf-8"
+    )
+    return retryable
 
 
 class PrivacyMode(StrEnum):
@@ -292,6 +316,38 @@ async def evaluate_sample(
     return SampleOutcome(row=row, models_returned=_returned_models(result.model_info))
 
 
+def failure_row(
+    sample: LabeledSample,
+    *,
+    dataset: str,
+    judge_name: str,
+    model: str,
+    metrics: list[str],
+    error: str,
+) -> dict[str, Any]:
+    """A row for a sample the judge could not score, carrying null scores and the reason.
+
+    Written so the analysis sees the sample as *unscored* rather than not seeing it at all.
+    Coverage is part of the result: "193 of 200 scored" is a finding, and silently dropping
+    the other seven turns a partial run into an apparently complete one.
+    """
+    scores: dict[str, float | None] = {"faithfulness": None}
+    if "relevance" in metrics:
+        scores["relevance"] = None
+    return {
+        "sample_id": sample.id,
+        "dataset": dataset,
+        "judge": judge_name,
+        "model": model,
+        "label_hallucinated": sample.label_hallucinated,
+        "scores": scores,
+        "verdicts": [],
+        "latency_ms": None,
+        "usage": {},
+        "error": error,
+    }
+
+
 async def run_benchmark(
     samples: list[LabeledSample],
     *,
@@ -302,6 +358,8 @@ async def run_benchmark(
     out_dir: Path,
     settings: Settings,
     metrics: list[str] | None = None,
+    retry_failed: bool = False,
+    sampling: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate `samples`, appending rows and writing the run manifest. Returns the manifest."""
     selected = metrics if metrics is not None else list(settings.enabled_metrics)
@@ -310,8 +368,14 @@ async def run_benchmark(
 
     validate_metric_selection(selected)
     identity = run_identity(dataset, judge_name, model, selected, settings)
-    environment = run_environment(settings)
+    # `limit` stays out: extending a run to more samples is what resuming is for. Which
+    # population the samples were drawn from is a different matter — resuming a test-split
+    # run with training data would mix two populations into one file.
+    draw = dict(sampling or {})
+    draw.pop("limit", None)
+    environment = {**run_environment(settings), "sampling": draw}
     previous = check_resume_compatibility(rows_path, manifest_path, identity, environment)
+    retried = drop_failed_rows(rows_path) if retry_failed else set()
     already_done = completed_sample_ids(rows_path)
     written = 0
     failures: list[dict[str, str]] = []
@@ -333,18 +397,27 @@ async def run_benchmark(
                 )
             except Exception as exc:
                 # Fail soft: one bad sample must not end a 200-sample run. The failure is
-                # recorded in the manifest with the sample id, and the analysis reads the
-                # manifest to report coverage — a judge that fails selectively on hard or
-                # hallucinated samples must not be able to look more accurate by having
-                # those samples quietly missing from the rows file.
+                # still written as a row, because a sample that vanishes from the rows file
+                # vanishes from the analysis too: a judge that fails selectively on hard or
+                # hallucinated samples would otherwise look more accurate than it is. The
+                # row carries null scores, so it counts as unscored, never as a result.
                 error = f"{type(exc).__name__}: {exc}"
                 failures.append({"sample_id": sample.id, "error": error})
                 typer.echo(f"sample {sample.id} failed: {exc}", err=True)
-                continue
-            models_returned.update(outcome.models_returned)
-            handle.write(json.dumps(outcome.row, ensure_ascii=False) + "\n")
+                row = failure_row(
+                    sample,
+                    dataset=dataset,
+                    judge_name=judge_name,
+                    model=model,
+                    metrics=selected,
+                    error=error,
+                )
+            else:
+                row = outcome.row
+                models_returned.update(outcome.models_returned)
+                written += 1
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()
-            written += 1
 
     current_sha = git_sha()
     # Every commit whose rows are in this file: code can change between resumes even when
@@ -368,6 +441,11 @@ async def run_benchmark(
             "privacy_mode": settings.privacy_mode,
             "limit": len(samples),
         },
+        "sampling": dict(sampling or {}),
+        "label_balance": {
+            "hallucinated": sum(sample.label_hallucinated for sample in samples),
+            "not_hallucinated": sum(not sample.label_hallucinated for sample in samples),
+        },
         "git_sha": current_sha,
         "git_shas": contributing_shas,
         "git_dirty": git_dirty(),
@@ -375,6 +453,7 @@ async def run_benchmark(
         "samples_seen": len(samples),
         "samples_written": written,
         "samples_skipped": len(already_done),
+        "samples_retried": sorted(retried),
         "failure_count": len(failures),
         "failures": failures,
         "rows_path": str(rows_path),
@@ -419,7 +498,16 @@ def main(
     judge: Annotated[
         str, typer.Option(help="slm (local) or cloud (PUBLIC benchmark data only).")
     ] = "slm",
-    limit: Annotated[int | None, typer.Option(help="Score only the first N samples.")] = None,
+    limit: Annotated[int | None, typer.Option(help="Score only N samples.")] = None,
+    split: Annotated[
+        str | None, typer.Option(help="Official split to score, e.g. test. Fails if absent.")
+    ] = None,
+    seed: Annotated[
+        int | None, typer.Option(help="Shuffle seed; recorded so the draw can be repeated.")
+    ] = None,
+    stratify: Annotated[
+        bool, typer.Option("--stratify", help="Keep the label/task balance when limiting.")
+    ] = False,
     out: Annotated[Path, typer.Option(help="Output directory for JSONL rows.")] = Path("results"),
     privacy_mode: Annotated[
         PrivacyMode | None,
@@ -429,6 +517,9 @@ def main(
         list[str] | None, typer.Option(help="Repeatable; defaults to the configured metrics.")
     ] = None,
     data_dir: Annotated[Path | None, typer.Option(help="Dataset cache directory.")] = None,
+    retry_failed: Annotated[
+        bool, typer.Option("--retry-failed", help="Re-score samples that previously failed.")
+    ] = False,
 ) -> None:
     """Run one judge over one dataset and write results/<dataset>_<judge>.jsonl."""
     settings = apply_privacy_mode(get_settings(), privacy_mode.value if privacy_mode else None)
@@ -442,7 +533,9 @@ def main(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    samples = load(dataset, limit, data_dir=data_dir)
+    samples = load(
+        dataset, limit, data_dir=data_dir, split=split, seed=seed, stratify=stratify
+    )
     client, judge_settings = build_judge(judge, settings)
 
     manifest = asyncio.run(
@@ -455,6 +548,8 @@ def main(
             out_dir=out,
             settings=judge_settings,
             metrics=selected,
+            retry_failed=retry_failed,
+            sampling={"split": split, "seed": seed, "stratify": stratify, "limit": limit},
         )
     )
     typer.echo(json.dumps(manifest, indent=2, ensure_ascii=False))
