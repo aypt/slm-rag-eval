@@ -7,6 +7,7 @@ invent data the judge never produced.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -41,6 +42,19 @@ class ThresholdMetrics:
     recall: float
     f1: float
     balanced_accuracy: float
+    accuracy: float = 0.0
+    cohen_kappa: float | None = None
+    """Agreement with the gold labels, corrected for chance; None when it is undefined."""
+
+    @property
+    def total(self) -> int:
+        """Samples behind these counts — the denominator every rate here shares."""
+        return (
+            self.true_positives
+            + self.false_positives
+            + self.false_negatives
+            + self.true_negatives
+        )
 
 
 @dataclass
@@ -64,7 +78,9 @@ class JudgeReport:
     unlabeled: int = 0
     """Rows with a score but no human label; excluded from every quality metric."""
     failed: int = 0
-    """Samples that produced no row at all, counted from the run manifests."""
+    """Samples the judge could not score, counted from the error each failed row carries."""
+    holdout: HoldoutResult | None = None
+    """Threshold chosen on half the labeled rows and measured on the other half."""
 
     @property
     def series(self) -> str:
@@ -86,6 +102,8 @@ class RunProvenance:
     failures: tuple[str, ...]
     git_sha: str | None
     git_dirty: bool | None
+    privacy_mode: str | None = None
+    """`mask` or `off`; the axis the privacy ablation compares along."""
 
     @property
     def fingerprint(self) -> str:
@@ -115,12 +133,15 @@ def load_provenance(rows_path: Path) -> RunProvenance:
     run_id = manifest.get("run_id")
     dirty = manifest.get("git_dirty")
     sha = manifest.get("git_sha")
+    identity = manifest.get("run_identity")
+    privacy_mode = identity.get("privacy_mode") if isinstance(identity, dict) else None
     return RunProvenance(
         run_id=run_id if isinstance(run_id, str) else None,
         failure_count=count if isinstance(count, int) else len(failures),
         failures=failures,
         git_sha=sha if isinstance(sha, str) else None,
         git_dirty=dirty if isinstance(dirty, bool) else None,
+        privacy_mode=privacy_mode if isinstance(privacy_mode, str) else None,
     )
 
 
@@ -157,8 +178,9 @@ def load_rows(paths: Iterable[Path]) -> pd.DataFrame:
                         "prompt_tokens": usage.get("prompt_tokens", 0),
                         "completion_tokens": usage.get("completion_tokens", 0),
                         "total_tokens": usage.get("total_tokens", 0),
+                        "error": row.get("error"),
                         "run_id": provenance.run_id,
-                        "run_failures": provenance.failure_count,
+                        "privacy_mode": provenance.privacy_mode,
                         "source_path": str(rows_path),
                     }
                 )
@@ -183,6 +205,7 @@ def threshold_metrics(
     recall = _ratio(true_positives, true_positives + false_negatives)
     f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
     specificity = _ratio(true_negatives, true_negatives + false_positives)
+    total = len(predicted)
     return ThresholdMetrics(
         threshold=threshold,
         true_positives=true_positives,
@@ -193,7 +216,23 @@ def threshold_metrics(
         recall=recall,
         f1=f1,
         balanced_accuracy=(recall + specificity) / 2,
+        accuracy=_ratio(true_positives + true_negatives, total),
+        cohen_kappa=_kappa_against_gold(labels, predicted),
     )
+
+
+def _kappa_against_gold(labels: Sequence[bool], predicted: Sequence[bool]) -> float | None:
+    """Chance-corrected agreement with the human labels, or None where it is undefined.
+
+    Raw accuracy flatters a judge on an unbalanced set: calling everything faithful scores
+    70% when 30% of samples are hallucinated. Kappa removes exactly that, which is why the
+    rubric asks for it. It needs both vectors to vary; when neither does, it is undefined
+    and stays None rather than being invented.
+    """
+    if len(set(labels)) < 2 and len(set(predicted)) < 2:
+        return None
+    value = float(cohen_kappa_score(list(labels), list(predicted)))
+    return None if np.isnan(value) else value
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -246,21 +285,86 @@ def _series_column(frame: pd.DataFrame) -> str:
 
 
 def _failed_samples(frame: pd.DataFrame) -> int:
-    """Samples the judge could not score at all, per the manifests behind these rows.
+    """Samples the judge could not score, counted from the error each failed row carries.
 
-    A failed sample writes no row, so it is invisible in the JSONL. Counting it here keeps
-    the denominator honest: a judge that fails on the samples it finds hardest would
-    otherwise post better numbers precisely because the hard cases went missing.
+    Keeping the denominator honest matters more here than anywhere else: a judge that fails
+    on the samples it finds hardest would post better numbers precisely because the hard
+    cases went missing.
     """
-    if "run_failures" not in frame.columns or "source_path" not in frame.columns:
+    if "error" not in frame.columns:
         return 0
-    per_file = frame.drop_duplicates(subset="source_path")["run_failures"]
-    return int(per_file.fillna(0).sum())
+    return int(frame["error"].notna().sum())
 
 
 def _labeled_scored(frame: pd.DataFrame) -> pd.DataFrame:
     """Rows that carry both a judge score and a human label — the only ones quality uses."""
     return frame[frame["faithfulness"].notna() & frame["label_hallucinated"].notna()]
+
+
+HOLDOUT_SALT = "slm-rag-eval/threshold-split/v1"
+
+
+def holdout_fold(dataset: str, sample_id: str) -> int:
+    """Which half a sample belongs to: 0 selects the threshold, 1 reports the result.
+
+    Hashed from the sample identity rather than drawn at random, for two reasons. Every
+    judge must be scored on the *same* reporting half, or the comparison between them is
+    not like for like. And the split has to survive a resume, a re-run, and a re-analysis
+    without being stored anywhere.
+    """
+    digest = hashlib.sha256(f"{HOLDOUT_SALT}|{dataset}|{sample_id}".encode()).hexdigest()
+    return int(digest[:8], 16) % 2
+
+
+def _fold_masks(frame: pd.DataFrame) -> tuple[list[bool], list[bool]]:
+    folds = [
+        holdout_fold(str(dataset), str(sample_id))
+        for dataset, sample_id in zip(frame["dataset"], frame["sample_id"], strict=True)
+    ]
+    return [fold == 0 for fold in folds], [fold == 1 for fold in folds]
+
+
+@dataclass(frozen=True)
+class HoldoutResult:
+    """A threshold chosen on one half of the labeled data and measured on the other.
+
+    The best-F1 threshold reported on the same rows it was chosen from is an upper bound,
+    not a deployment setting — it has seen every sample it is scored on. This is the honest
+    number: chosen blind to the rows it is measured on.
+    """
+
+    threshold: float
+    selection_size: int
+    reporting_size: int
+    metrics: ThresholdMetrics
+
+
+def select_threshold_holdout(
+    labels: Sequence[bool],
+    scores: Sequence[float],
+    selection: Sequence[bool],
+) -> HoldoutResult | None:
+    """Pick best-F1 on the selection half, then measure it on the reporting half."""
+    fit_labels = [label for label, chosen in zip(labels, selection, strict=True) if chosen]
+    fit_scores = [score for score, chosen in zip(scores, selection, strict=True) if chosen]
+    test_labels = [label for label, chosen in zip(labels, selection, strict=True) if not chosen]
+    test_scores = [score for score, chosen in zip(scores, selection, strict=True) if not chosen]
+    # Both halves need both classes. Without a positive in the selection half every
+    # threshold scores F1 0 and the sweep silently returns 0.00, which reads in the table
+    # as "this judge detects nothing" when the truth is "this split cannot measure it".
+    if len(set(fit_labels)) < 2 or len(set(test_labels)) < 2:
+        return None
+    if not fit_scores or not test_scores:
+        return None
+
+    sweep = [threshold_metrics(fit_labels, fit_scores, threshold) for threshold in THRESHOLDS]
+    chosen = max(sweep, key=lambda m: (m.f1, -m.threshold))
+    return HoldoutResult(
+        threshold=chosen.threshold,
+        selection_size=len(fit_scores),
+        reporting_size=len(test_scores),
+        metrics=threshold_metrics(test_labels, test_scores, chosen.threshold),
+    )
 
 
 def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
@@ -275,6 +379,8 @@ def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
     sweep = [threshold_metrics(labels, scores, threshold) for threshold in THRESHOLDS]
     # Ties go to the lower threshold: fewer positives for the same F1.
     best = max(sweep, key=lambda m: (m.f1, -m.threshold)) if scores else None
+    selection_mask, _ = _fold_masks(labeled)
+    holdout = select_threshold_holdout(labels, scores, selection_mask) if scores else None
 
     roc_auc: float | None = None
     if len(set(labels)) == 2:
@@ -293,6 +399,7 @@ def analyze_judge(frame: pd.DataFrame) -> JudgeReport:
         unscored=int(frame["faithfulness"].isna().sum()),
         unlabeled=int(frame["label_hallucinated"].isna().sum()),
         failed=_failed_samples(frame),
+        holdout=holdout,
         positives=sum(labels),
         negatives=len(labels) - sum(labels),
         sweep=sweep,
@@ -392,6 +499,94 @@ def spearman(left: Sequence[float], right: Sequence[float]) -> float | None:
 
 
 @dataclass(frozen=True)
+class PrivacyAblation:
+    """What masking cost this judge: the same samples scored with and without it.
+
+    This is the answer to "is privacy protection free?", and it is the only number in the
+    report that can justify running the pipeline in `mask` mode by default. A delta near
+    zero says the judge reasons about `<PERSON_1>` as well as about a name; a large negative
+    delta says the privacy layer is buying protection with accuracy.
+    """
+
+    judge: str
+    model: str
+    masked_series: str
+    unmasked_series: str
+    shared_samples: int
+    masked_f1: float | None
+    unmasked_f1: float | None
+    masked_accuracy: float | None
+    unmasked_accuracy: float | None
+
+    @property
+    def delta_f1(self) -> float | None:
+        """Masked minus unmasked. Negative means masking cost accuracy."""
+        if self.masked_f1 is None or self.unmasked_f1 is None:
+            return None
+        return self.masked_f1 - self.unmasked_f1
+
+    @property
+    def delta_accuracy(self) -> float | None:
+        """Masked minus unmasked accuracy."""
+        if self.masked_accuracy is None or self.unmasked_accuracy is None:
+            return None
+        return self.masked_accuracy - self.unmasked_accuracy
+
+
+def analyze_privacy_ablation(
+    frame: pd.DataFrame,
+    reports: dict[str, JudgeReport],
+) -> list[PrivacyAblation]:
+    """Pair every masked series with the unmasked series of the same judge, model and dataset.
+
+    Pairing is on (judge, model, dataset) rather than on the series label, because the two
+    runs deliberately carry different run fingerprints — that is exactly what keeps the
+    analyzer from pooling them in the first place.
+    """
+    if "privacy_mode" not in frame.columns:
+        return []
+
+    keyed: dict[tuple[str, str, str], dict[str, str]] = {}
+    for series, report in reports.items():
+        rows = frame[frame[_series_column(frame)] == series]
+        modes = {str(value) for value in rows["privacy_mode"].dropna().unique()}
+        if len(modes) != 1:
+            continue
+        key = (report.judge, report.model, ",".join(report.datasets))
+        keyed.setdefault(key, {})[modes.pop()] = series
+
+    ablations: list[PrivacyAblation] = []
+    for (judge, model, _), by_mode in sorted(keyed.items()):
+        masked, unmasked = by_mode.get("mask"), by_mode.get("off")
+        if masked is None or unmasked is None:
+            continue
+        shared = set(_scored_by_sample(frame, masked)) & set(_scored_by_sample(frame, unmasked))
+        ablations.append(
+            PrivacyAblation(
+                judge=judge,
+                model=model,
+                masked_series=masked,
+                unmasked_series=unmasked,
+                shared_samples=len(shared),
+                masked_f1=_holdout_or_best(reports[masked], "f1"),
+                unmasked_f1=_holdout_or_best(reports[unmasked], "f1"),
+                masked_accuracy=_holdout_or_best(reports[masked], "accuracy"),
+                unmasked_accuracy=_holdout_or_best(reports[unmasked], "accuracy"),
+            )
+        )
+    return ablations
+
+
+def _holdout_or_best(report: JudgeReport, attribute: str) -> float | None:
+    """Held-out metric where one exists, otherwise the in-sample one; None if neither does."""
+    metrics = report.holdout.metrics if report.holdout is not None else report.best
+    if metrics is None:
+        return None
+    value = getattr(metrics, attribute)
+    return float(value) if value is not None else None
+
+
+@dataclass(frozen=True)
 class CostModel:
     """Cloud pricing in USD per one million tokens; the local judge is marginal-cost zero."""
 
@@ -483,6 +678,105 @@ def plot_latency_box(frame: pd.DataFrame, out_dir: Path) -> Path:
     return _save(figure, _figure_path(out_dir, "latency_box"))
 
 
+def _best_f1(report: JudgeReport) -> float:
+    """In-sample F1, or 0.0 when the series has no labeled rows to have measured one."""
+    return report.best.f1 if report.best is not None else 0.0
+
+
+def _holdout_f1(report: JudgeReport) -> float:
+    """Held-out F1, or 0.0 when the labeled rows could not be split into two halves."""
+    return report.holdout.metrics.f1 if report.holdout is not None else 0.0
+
+
+def plot_reliability(reports: dict[str, JudgeReport], out_dir: Path) -> Path:
+    """Report Figure 6.1: detection quality per judge, in-sample beside held-out.
+
+    Showing both is the point. The gap between them is how much the best-F1 threshold owes
+    to having seen the rows it is scored on, and a reader can only judge that if both are
+    on the same axes.
+    """
+    series = sorted(reports)
+    figure, axes = plt.subplots(figsize=(max(6, 1.6 * len(series) + 3), 4.5))
+    positions = np.arange(len(series))
+    width = 0.35
+
+    in_sample = [_best_f1(reports[name]) for name in series]
+    held_out = [_holdout_f1(reports[name]) for name in series]
+    axes.bar(positions - width / 2, in_sample, width, label="F1 (in-sample threshold)",
+             color="#4C72B0", edgecolor="black", linewidth=0.5)
+    axes.bar(positions + width / 2, held_out, width, label="F1 (held-out threshold)",
+             color="#DD8452", edgecolor="black", linewidth=0.5, hatch="//")
+
+    axes.set_xticks(positions)
+    axes.set_xticklabels(series, rotation=20, ha="right")
+    axes.set_ylabel("F1 (hallucinated = positive class)")
+    axes.set_ylim(0, 1)
+    axes.set_title("Hallucination detection quality per judge")
+    axes.grid(alpha=0.3, axis="y")
+    axes.legend(loc="lower right", fontsize=8)
+    return _save(figure, _figure_path(out_dir, "reliability"))
+
+
+def plot_tradeoff(
+    reports: dict[str, JudgeReport],
+    costs: CostModel,
+    out_dir: Path,
+    *,
+    samples: int = 1000,
+) -> Path:
+    """Report Figure 6.3: quality against latency, sized by cost — the "when is an SLM
+    worth it" figure.
+
+    One point per judge. The y axis is the held-out F1 where there is one, because the
+    in-sample number would flatter every judge by a different amount and distort exactly the
+    comparison this figure exists to make.
+    """
+    figure, axes = plt.subplots(figsize=(7, 5))
+    markers = ("o", "s", "^", "D", "v", "P")
+
+    plotted = False
+    for index, name in enumerate(sorted(reports)):
+        report = reports[name]
+        quality = report.holdout.metrics.f1 if report.holdout else (
+            report.best.f1 if report.best else None
+        )
+        if quality is None or report.latency_median_ms is None:
+            continue
+        cost = costs.estimate(report, samples)
+        axes.scatter(
+            report.latency_median_ms,
+            quality,
+            s=120,
+            marker=markers[index % len(markers)],
+            edgecolor="black",
+            linewidth=0.6,
+            zorder=3,
+            label=f"{name} (${cost:.2f}/1k)",
+        )
+        axes.annotate(
+            name,
+            (report.latency_median_ms, quality),
+            textcoords="offset points",
+            xytext=(8, 6),
+            fontsize=8,
+        )
+        plotted = True
+
+    axes.set_xlabel("Median latency per evaluation (ms) — lower is better")
+    axes.set_ylabel("F1 at the held-out threshold — higher is better")
+    axes.set_title(f"Quality against latency (legend shows USD per {samples} evaluations)")
+    axes.set_ylim(0, 1.05)
+    axes.grid(alpha=0.3)
+    if plotted:
+        axes.legend(loc="lower left", fontsize=8)
+        # The upper-left corner is the one worth being in; naming it saves a paragraph.
+        axes.text(
+            0.02, 0.97, "better", transform=axes.transAxes, fontsize=9,
+            va="top", ha="left", style="italic", color="gray",
+        )
+    return _save(figure, _figure_path(out_dir, "tradeoff"))
+
+
 def _save(figure: plt.Figure, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     figure.tight_layout()
@@ -507,6 +801,7 @@ def render_summary(
     agreements: Sequence[AgreementReport],
     costs: CostModel,
     figures: Sequence[Path],
+    ablations: Sequence[PrivacyAblation] = (),
 ) -> str:
     """Build report/summary.md: detection quality, agreement, efficiency, and cost."""
     datasets = ", ".join(sorted({str(value) for value in frame["dataset"].dropna().unique()}))
@@ -564,6 +859,44 @@ def render_summary(
         "",
     ]
 
+    sections += [
+        "## Detection quality at a held-out threshold",
+        "",
+        "The table above chooses each threshold on the same rows it reports, so its F1 is an "
+        "upper bound. Here the threshold is chosen on half the labeled rows and measured on "
+        "the other half, split by a hash of the sample id so every judge is measured on the "
+        "same held-out samples. **These are the numbers to quote as the result**; the "
+        "difference between the two tables is how much the in-sample threshold flatters the "
+        "judge.",
+        "",
+        _markdown_table(
+            ["Judge", "Fit n", "Test n", "t", "P", "R", "F1", "Accuracy", "Kappa"],
+            [
+                [
+                    report.series,
+                    str(report.holdout.selection_size) if report.holdout else "n/a",
+                    str(report.holdout.reporting_size) if report.holdout else "n/a",
+                    _format(report.holdout.threshold, 2) if report.holdout else "n/a",
+                    _format(report.holdout.metrics.precision) if report.holdout else "n/a",
+                    _format(report.holdout.metrics.recall) if report.holdout else "n/a",
+                    _format(report.holdout.metrics.f1) if report.holdout else "n/a",
+                    _format(report.holdout.metrics.accuracy) if report.holdout else "n/a",
+                    _format(report.holdout.metrics.cohen_kappa) if report.holdout else "n/a",
+                ]
+                for report in reports.values()
+            ],
+        ),
+        "",
+        "Kappa here is agreement with the **human labels**, corrected for chance. On an "
+        "unbalanced set raw accuracy flatters a judge that always answers the same way; "
+        "kappa does not.",
+        "",
+        "`n/a` means the split could not measure it — one of the two halves held only one "
+        "class, so no threshold is distinguishable from any other. It does not mean the "
+        "judge scored zero. Increase the sample size or stratify the draw.",
+        "",
+    ]
+
     for report in reports.values():
         sections += [
             f"### {report.series}: threshold sweep",
@@ -611,6 +944,37 @@ def render_summary(
     else:
         sections += ["No sample was scored by more than one judge.", ""]
 
+    sections += ["## Privacy ablation: what masking costs", ""]
+    if ablations:
+        sections += [
+            _markdown_table(
+                ["Judge", "Model", "Shared samples", "F1 masked", "F1 unmasked", "ΔF1", "ΔAcc"],
+                [
+                    [
+                        item.judge,
+                        item.model,
+                        str(item.shared_samples),
+                        _format(item.masked_f1),
+                        _format(item.unmasked_f1),
+                        _format(item.delta_f1),
+                        _format(item.delta_accuracy),
+                    ]
+                    for item in ablations
+                ],
+            ),
+            "",
+            "Δ is masked minus unmasked, so a negative value is accuracy given up in exchange "
+            "for the privacy guarantee. Both sides use each run's held-out threshold.",
+            "",
+        ]
+    else:
+        sections += [
+            "No judge was run both with and without masking, so the cost of the privacy "
+            "layer is not measured here. Run the same dataset twice — `--privacy-mode mask` "
+            "and `--privacy-mode off`, into different `--out` directories — and analyze both.",
+            "",
+        ]
+
     sections += [
         "## Efficiency and cost",
         "",
@@ -657,21 +1021,121 @@ def analyze(
         for series in sorted(frame[SERIES_COLUMN].dropna().unique())
     }
     agreements = analyze_agreement(frame, reports)
+    ablations = analyze_privacy_ablation(frame, reports)
     figures = [
+        plot_reliability(reports, out_dir),
         plot_roc_curves(frame, reports, out_dir),
+        plot_tradeoff(reports, cost_model, out_dir),
         plot_score_distributions(frame, out_dir),
         plot_latency_box(frame, out_dir),
     ]
 
     summary_path = out_dir / "summary.md"
     summary_path.write_text(
-        render_summary(frame, reports, agreements, cost_model, figures), encoding="utf-8"
+        render_summary(frame, reports, agreements, cost_model, figures, ablations),
+        encoding="utf-8",
     )
+    results_path = export_results(reports, agreements, cost_model, out_dir, ablations)
     return {
         "summary_path": summary_path,
+        "results_path": results_path,
         "figures": figures,
         "reports": reports,
         "agreements": agreements,
+        "ablations": ablations,
+    }
+
+
+def export_results(
+    reports: dict[str, JudgeReport],
+    agreements: Sequence[AgreementReport],
+    costs: CostModel,
+    out_dir: Path,
+    ablations: Sequence[PrivacyAblation] = (),
+) -> Path:
+    """Write results.json: every number in the summary, machine-readable.
+
+    Report prose has to quote exact figures, and re-typing them from a Markdown table is how
+    a report ends up with a number that no longer matches the run that produced it. This is
+    the file to read them from.
+    """
+    payload = {
+        "judges": {
+            name: {
+                "judge": report.judge,
+                "model": report.model,
+                "datasets": list(report.datasets),
+                "coverage": {
+                    "scored": report.scored,
+                    "unscored": report.unscored,
+                    "unlabeled": report.unlabeled,
+                    "failed": report.failed,
+                    "positives": report.positives,
+                    "negatives": report.negatives,
+                },
+                "in_sample": _metrics_payload(report.best),
+                "held_out": (
+                    {
+                        "threshold": report.holdout.threshold,
+                        "selection_size": report.holdout.selection_size,
+                        "reporting_size": report.holdout.reporting_size,
+                        **(_metrics_payload(report.holdout.metrics) or {}),
+                    }
+                    if report.holdout
+                    else None
+                ),
+                "roc_auc": report.roc_auc,
+                "latency_median_ms": report.latency_median_ms,
+                "latency_p95_ms": report.latency_p95_ms,
+                "mean_tokens": report.mean_tokens,
+                "estimated_usd_per_1k_evals": costs.estimate(report, 1000),
+            }
+            for name, report in reports.items()
+        },
+        "privacy_ablation": [
+            {
+                "judge": item.judge,
+                "model": item.model,
+                "shared_samples": item.shared_samples,
+                "masked_f1": item.masked_f1,
+                "unmasked_f1": item.unmasked_f1,
+                "delta_f1": item.delta_f1,
+                "delta_accuracy": item.delta_accuracy,
+            }
+            for item in ablations
+        ],
+        "agreement": [
+            {
+                "judge_a": item.judge_a,
+                "judge_b": item.judge_b,
+                "overlap": item.overlap,
+                "pearson": item.pearson,
+                "spearman": item.spearman,
+                "cohen_kappa": item.cohen_kappa,
+            }
+            for item in agreements
+        ],
+    }
+    path = out_dir / "results.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _metrics_payload(metrics: ThresholdMetrics | None) -> dict[str, Any] | None:
+    if metrics is None:
+        return None
+    return {
+        "threshold": metrics.threshold,
+        "true_positives": metrics.true_positives,
+        "false_positives": metrics.false_positives,
+        "false_negatives": metrics.false_negatives,
+        "true_negatives": metrics.true_negatives,
+        "precision": metrics.precision,
+        "recall": metrics.recall,
+        "f1": metrics.f1,
+        "accuracy": metrics.accuracy,
+        "balanced_accuracy": metrics.balanced_accuracy,
+        "cohen_kappa": metrics.cohen_kappa,
     }
 
 

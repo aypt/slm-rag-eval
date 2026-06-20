@@ -153,7 +153,9 @@ def test_analyze_writes_every_output_file(tmp_path: Path) -> None:
     summary = tmp_path / "summary.md"
     assert summary.exists()
     assert {path.name for path in outcome["figures"]} == {
+        "reliability.png",
         "roc_curves.png",
+        "tradeoff.png",
         "score_distributions.png",
         "latency_box.png",
     }
