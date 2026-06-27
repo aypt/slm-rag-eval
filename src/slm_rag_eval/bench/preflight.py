@@ -124,11 +124,23 @@ def check_model_available(settings: Settings, served: list[str]) -> Check:
 
 
 def check_dataset(
-    dataset: str, limit: int | None, data_dir: Path | None
+    dataset: str,
+    limit: int | None,
+    data_dir: Path | None,
+    *,
+    split: str | None = None,
+    seed: int | None = None,
+    stratify: bool = False,
 ) -> tuple[Check, list[LabeledSample]]:
-    """Dataset present, plus the label balance the report has to state."""
+    """Dataset present, plus the label balance the report has to state.
+
+    Takes the same sampling arguments the real run will use, so a misspelled split or an
+    unavailable one fails here rather than after the judge is already warm.
+    """
     try:
-        samples = load(dataset, limit, data_dir=data_dir)
+        samples = load(
+            dataset, limit, data_dir=data_dir, split=split, seed=seed, stratify=stratify
+        )
     except (FileNotFoundError, ValueError) as exc:
         return Check("dataset", FAIL, str(exc)), []
     if not samples:
@@ -170,6 +182,38 @@ def check_context_budget(samples: list[LabeledSample], settings: Settings) -> Ch
     if settings.max_tokens < estimated_output:
         return Check("token budget", WARN, f"{detail} — consider raising SLMEVAL_MAX_TOKENS")
     return Check("token budget", OK, detail)
+
+
+def check_holdout_viability(samples: list[LabeledSample]) -> Check:
+    """Whether this sample set can support a held-out threshold at all.
+
+    The held-out F1 is the number the report quotes. It needs both classes present in both
+    halves of the hash split; too few positives and the analysis reports n/a after the run
+    has already been paid for.
+    """
+    if not samples:
+        return Check("held-out split", WARN, "no samples to check")
+
+    from slm_rag_eval.bench.analyze import holdout_fold
+
+    halves: dict[int, list[bool]] = {0: [], 1: []}
+    for sample in samples:
+        halves[holdout_fold("preflight", sample.id)].append(sample.label_hallucinated)
+
+    sizes = {fold: len(labels) for fold, labels in halves.items()}
+    if any(len(set(labels)) < 2 for labels in halves.values()):
+        return Check(
+            "held-out split",
+            FAIL,
+            f"one half holds a single class (sizes {sizes[0]}/{sizes[1]}). The held-out "
+            "table would be all n/a. Raise --limit or use --stratify.",
+        )
+    smallest = min(sum(labels) for labels in halves.values())
+    status = OK if smallest >= 10 else WARN
+    detail = f"halves {sizes[0]}/{sizes[1]}, fewest positives in a half: {smallest}"
+    if status is WARN:
+        detail += " — too few for a stable F1; say so in Limitations or raise --limit"
+    return Check("held-out split", status, detail)
 
 
 def check_privacy(settings: Settings) -> Check:
@@ -340,6 +384,11 @@ def main(
     limit: Annotated[
         int | None, typer.Option(help="Dataset limit the real run will use.")
     ] = None,
+    split: Annotated[str | None, typer.Option(help="Split the real run will use.")] = None,
+    seed: Annotated[int | None, typer.Option(help="Sampling seed the real run will use.")] = None,
+    stratify: Annotated[
+        bool, typer.Option("--stratify", help="Stratified draw, as the real run will use.")
+    ] = False,
     out: Annotated[Path, typer.Option(help="Output directory the real run will use.")] = Path(
         "results"
     ),
@@ -363,9 +412,12 @@ def main(
     if endpoint_check.status == OK:
         checks.append(check_model_available(settings, served))
 
-    dataset_check, samples = check_dataset(dataset, limit, data_dir)
+    dataset_check, samples = check_dataset(
+        dataset, limit, data_dir, split=split, seed=seed, stratify=stratify
+    )
     checks.append(dataset_check)
     checks.append(check_context_budget(samples, settings))
+    checks.append(check_holdout_viability(samples))
     checks.append(check_privacy(settings))
     checks.append(
         check_output_dir(out, dataset, judge, settings, metrics, settings.model)
