@@ -549,3 +549,69 @@ and the mask-on/mask-off ablation, and resource-footprint capture. Plus the READ
 fresh-clone transcript, which is demonstrably false for the commit it names (`9001cfa`
 contained four built-in samples, and the transcript claims twenty and `126 passed`) and must
 be replaced with real output or deleted.
+
+## P1 — everything the report needs, produced by one command (2026-08-06)
+
+Second human-directed work order, with explicit authorization to edit assertions, change
+prompts, and make any optimization that proved necessary along the way. Goal: on rental day
+the machine only executes — every figure, table and number the report requires comes out of
+one invocation.
+
+Verified: ruff clean, mypy clean (34 source files), **pytest 238 passed** (was 207).
+Rehearsed end to end against a stub judge whose per-model accuracy differs, confirming the
+measured ordering matches the stub's construction (cloud F1 1.000 / κ 1.000, good-7b 0.842 /
+0.739, weak-3b 0.615 / 0.211).
+
+### Capabilities that did not exist before
+
+- **Sampling protocol.** `--split` (fails loudly rather than silently returning training
+  data), `--seed`, and `--stratify` on (label, task_type). "First 200 rows" was not a
+  defensible test set for a file ordered by source and generator.
+- **Held-out thresholds.** Selected on half the labeled rows, measured on the other half,
+  split by a hash of the sample id so every judge is measured on the *same* held-out
+  samples. Both tables are printed; the gap between them is what was previously invisible.
+- **Accuracy and Cohen's κ against gold.** Both named by the rubric; neither existed.
+- **Privacy detection quality.** Synthetic span-labeled corpus + span-level P/R/F1. Measured
+  on the current configuration: precision 1.000, recall 0.952, one genuine miss.
+- **Privacy ablation.** Masked vs unmasked ΔF1/ΔAccuracy, pairing runs that carry different
+  fingerprints by design.
+- **Error analysis.** Structural buckets assigned without reference to any judge's answer.
+- **Environment capture, dataset statistics, `results.json`, Figures 6.1 and 6.3.**
+- **`bench.experiment`.** The whole matrix plus every analysis, in one command.
+- **`bench.preflight`.** Extended with the real sampling arguments and a held-out viability
+  check, so "too few positives to report an F1" surfaces before the machine is paid for.
+
+### Three things that were nearly reported wrong
+
+Recorded because each was caught by checking rather than by reasoning, and each would have
+put a false number in the report:
+
+1. **Fabricated PII weaknesses.** The first run showed EMAIL_ADDRESS recall 0.000 and US_SSN
+   0.000. Probing Presidio directly showed both were artifacts of the fixture: a `.test` TLD
+   that no detector recognises, and the historic blocklisted SSN, which is classified as a
+   phone number. Corrected to realistic values; recall went from 0.857 to 0.952. The
+   remaining miss ("Thunder Bay") is real and is reported.
+2. **Two tables that did not reconcile.** Per-type and overall detection counts were computed
+   in separate passes with different rules, so the rows did not sum to the total. Now one
+   pass, attributed by span.
+3. **An error rate four times too high.** The denominator counted samples while the numerator
+   counted errors across all four judges. Now counts sample-judge pairs.
+
+Also fixed on the way: a held-out split with one class in a half reported F1 0.00 at
+threshold 0.00, which reads as "this judge detects nothing" when it means "this split cannot
+measure it". It reports `n/a`, and the summary says explicitly that `n/a` is not zero.
+
+### Assertions changed, with reasons
+
+- `tests/bench/test_run.py` — the assertion pinning "a failed sample writes no row" was
+  pinning the defect itself. Replaced with one asserting the failure row exists and carries
+  null scores plus the error.
+- `tests/bench/test_analyze.py` — the figure-set assertion now includes the two new report
+  figures.
+- `tests/metrics/snapshots/` — regenerated after adding the non-blank/distinct rules to the
+  prompts, which cuts repair round trips and therefore rented GPU time.
+
+### Still manual, and named in docs/RUNBOOK.md
+
+Docker Compose startup evidence (Q4), peak VRAM/RAM (R4), and the candidate-SLM
+specification table, whose parameter counts and quantization come from model cards.
