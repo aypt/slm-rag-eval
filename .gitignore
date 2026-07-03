@@ -12,7 +12,7 @@ dist/
 # synthetic fixtures under tests/data/ are committed on purpose.
 /data/
 /results/
-/report/
+/report*/
 logs/
 .agent-stop
 .worktrees/
