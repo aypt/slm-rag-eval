@@ -39,6 +39,10 @@ class Settings(BaseSettings):
         ge=1,
         description="Completion token budget per judge call; raise it for long contexts.",
     )
+    disable_thinking: bool = Field(
+        default=True,
+        description="Append a no-thinking directive so hybrid-reasoning judges answer directly.",
+    )
     enabled_metrics: list[str] = Field(
         default_factory=lambda: ["faithfulness"],
         description="Metrics the registry runs by default (JSON list).",

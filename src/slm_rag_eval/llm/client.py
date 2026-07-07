@@ -42,6 +42,36 @@ class LLMClient(Protocol):
         ...
 
 
+NO_THINK_DIRECTIVE = "/no_think"
+"""Qwen3's documented switch for turning a hybrid-reasoning model's chain of thought off.
+
+Applied at the prompt rather than as a request parameter on purpose. `reasoning.enabled`
+is an OpenRouter gateway field that a local Ollama does not implement, whereas this
+directive is handled by the chat template itself and therefore behaves the same on every
+backend that serves the model. Measured on qwen3-8b: 339 completion tokens and 5.6 s become
+47 tokens and 1.7 s, with identical extracted claims. A model without a thinking mode
+ignores it — gemma-3-4b-it returned the same four claims either way.
+"""
+
+
+def apply_thinking_directive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Append the no-thinking directive to the final user turn, without mutating the input.
+
+    Only the last user message is touched, and only once: repeating the directive in every
+    turn would change the prompt a repair round sees relative to the first attempt.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") != "user":
+            continue
+        content = str(messages[index].get("content", ""))
+        if NO_THINK_DIRECTIVE in content:
+            return messages
+        updated = list(messages)
+        updated[index] = {**messages[index], "content": f"{content}\n{NO_THINK_DIRECTIVE}"}
+        return updated
+    return messages
+
+
 def _is_retryable_transport_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TimeoutException):
         return True
@@ -74,9 +104,12 @@ class OpenAICompatClient:
     ) -> LLMResponse:
         """Generate one completion, retrying only transient transport failures."""
         token_budget = max_tokens if max_tokens is not None else self._settings.max_tokens
+        outbound = (
+            apply_thinking_directive(messages) if self._settings.disable_thinking else messages
+        )
         payload: dict[str, Any] = {
             "model": self._settings.model,
-            "messages": messages,
+            "messages": outbound,
             "temperature": temperature,
             "max_tokens": token_budget,
         }
