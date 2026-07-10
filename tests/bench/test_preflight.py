@@ -30,6 +30,7 @@ from slm_rag_eval.bench.preflight import (
 )
 from slm_rag_eval.core.config import Settings
 from slm_rag_eval.llm.client import LLMResponse
+from tests.support import verdict_batch
 
 FIXTURE_DATA = Path(__file__).resolve().parents[1] / "data"
 CLAIM = "The probe carried three instruments."
@@ -177,7 +178,7 @@ class _Judge:
             raise self.error
         joined = "\n".join(str(m.get("content", "")) for m in messages)
         text = (
-            json.dumps([{"claim": CLAIM, "verdict": "supported", "reason": "The context agrees."}])
+            verdict_batch(CLAIM)
             if "Claims to verify" in joined
             else json.dumps({"claims": [CLAIM]})
         )

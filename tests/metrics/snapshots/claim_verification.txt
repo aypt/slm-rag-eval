@@ -3,8 +3,8 @@ Judge whether each claim is supported by the provided context.
 
 Rules:
 - Use only the provided context. Do not use outside knowledge.
-- Return a JSON array with exactly one item per claim, in the same index order.
-- Each item must contain claim, verdict, and reason.
+- Return only JSON matching {"verdicts": [{"claim": ..., "verdict": ..., "reason": ...}]}.
+- Include exactly one item per claim, in the same index order.
 - Copy the corresponding claim exactly into claim.
 - Use supported only when the context directly entails the whole claim.
 - Use unsupported when the context contradicts the claim or supports a different value.

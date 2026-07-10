@@ -20,8 +20,8 @@ async def test_registry_merges_both_metrics_into_complete_result(
 ) -> None:
     fake_llm.push(
         '{"claims":["The module uses a ceramic shield."]}',
-        '[{"claim":"The module uses a ceramic shield.","verdict":"supported",'
-        '"reason":"The context identifies the same shield material."}]',
+        '{"verdicts":[{"claim":"The module uses a ceramic shield.","verdict":"supported",'
+        '"reason":"The context identifies the same shield material."}]}',
         '{"questions":["Which material shields the module?",'
         '"What kind of shield does the module use?",'
         '"What protects the module?"]}',
@@ -53,8 +53,8 @@ async def test_registry_merges_both_metrics_into_complete_result(
 async def test_registry_defaults_to_faithfulness(fake_llm: FakeLLMClient) -> None:
     fake_llm.push(
         '{"claims":["The module uses a ceramic shield."]}',
-        '[{"claim":"The module uses a ceramic shield.","verdict":"supported",'
-        '"reason":"The context identifies the same shield material."}]',
+        '{"verdicts":[{"claim":"The module uses a ceramic shield.","verdict":"supported",'
+        '"reason":"The context identifies the same shield material."}]}',
     )
 
     result = await evaluate(_request(), judge=fake_llm)

@@ -29,7 +29,8 @@ def _verdict(claim: str, verdict: str) -> dict[str, str]:
 
 
 def _batch(*verdicts: dict[str, str]) -> str:
-    return json.dumps(list(verdicts))
+    """Object-wrapped, matching the schema the judge is actually given."""
+    return json.dumps({"verdicts": list(verdicts)})
 
 
 async def test_out_of_order_verdicts_are_reasked_and_then_aligned(

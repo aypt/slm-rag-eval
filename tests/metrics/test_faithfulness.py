@@ -16,7 +16,14 @@ def _verdict(claim: str, verdict: str, reason: str = "The context gives this evi
 
 
 def _batch(*items: str) -> str:
-    return f"[{','.join(items)}]"
+    """Verdicts are object-wrapped: a top-level array is not a valid schema root."""
+    return f'{{"verdicts":[{",".join(items)}]}}'
+
+
+def _user_turn(call: object) -> str:
+    """The user message of a recorded call, without the system instructions."""
+    messages = call.messages  # type: ignore[attr-defined]  # RecordedCall in conftest
+    return "\n".join(str(m["content"]) for m in messages if m["role"] == "user")
 
 
 def _render_messages(messages: list[dict[str, object]]) -> str:
@@ -110,8 +117,10 @@ async def test_seven_claims_are_verified_in_batches_of_five(
 
     assert result.faithfulness == 1.0
     assert len(fake_llm.calls) == 3
-    assert fake_llm.calls[1].full_text().count('"claim":') == 5
-    assert fake_llm.calls[2].full_text().count('"claim":') == 2
+    # Counted in the user turn only: the system instructions now show the output shape,
+    # which contains a `"claim":` of its own and would inflate a whole-prompt count.
+    assert _user_turn(fake_llm.calls[1]).count('"claim":') == 5
+    assert _user_turn(fake_llm.calls[2]).count('"claim":') == 2
 
 
 async def test_empty_answer_returns_explanation_without_calling_judge(

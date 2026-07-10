@@ -38,8 +38,8 @@ def _masked_judge() -> FakeLLMClient:
     judge = FakeLLMClient()
     judge.push(
         '{"claims":["<PERSON_1> uses <EMAIL_ADDRESS_1>."]}',
-        '[{"claim":"<PERSON_1> uses <EMAIL_ADDRESS_1>.","verdict":"supported",'
-        '"reason":"The context lists <PERSON_1> and <PHONE_NUMBER_1>."}]',
+        '{"verdicts":[{"claim":"<PERSON_1> uses <EMAIL_ADDRESS_1>.","verdict":"supported",'
+        '"reason":"The context lists <PERSON_1> and <PHONE_NUMBER_1>."}]}',
     )
     return judge
 
@@ -88,8 +88,8 @@ async def test_privacy_mode_off_persists_the_request_unchanged(tmp_path: Path) -
     judge = FakeLLMClient()
     judge.push(
         '{"claims":["' + NAME + ' uses ' + EMAIL + '."]}',
-        '[{"claim":"' + NAME + ' uses ' + EMAIL + '.","verdict":"supported",'
-        '"reason":"The context lists the same contact."}]',
+        '{"verdicts":[{"claim":"' + NAME + ' uses ' + EMAIL + '.","verdict":"supported",'
+        '"reason":"The context lists the same contact."}]}',
     )
     settings = service_settings(tmp_path, privacy_mode="off")
     engine = create_engine(settings.database_url)

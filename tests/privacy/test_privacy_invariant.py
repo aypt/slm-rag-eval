@@ -23,8 +23,8 @@ async def test_privacy_invariant_no_pii_leaves_process(fake_llm: FakeLLMClient) 
     sanitizer = Sanitizer(analyzer=analyzer)
     fake_llm.push(
         '{"claims":["<PERSON_1> uses <EMAIL_ADDRESS_1>."]}',
-        '[{"claim":"<PERSON_1> uses <EMAIL_ADDRESS_1>.","verdict":"supported",'
-        '"reason":"The context identifies <PERSON_1> and <PHONE_NUMBER_1>."}]',
+        '{"verdicts":[{"claim":"<PERSON_1> uses <EMAIL_ADDRESS_1>.","verdict":"supported",'
+        '"reason":"The context identifies <PERSON_1> and <PHONE_NUMBER_1>."}]}',
         '{"questions":["Who uses <EMAIL_ADDRESS_1>?",'
         '"Which email does <PERSON_1> use?","Whose email is <EMAIL_ADDRESS_1>?"]}',
         '{"ratings":['
@@ -66,8 +66,8 @@ class FailIfCalledSanitizer:
 async def test_privacy_mode_off_bypasses_sanitizer(fake_llm: FakeLLMClient) -> None:
     fake_llm.push(
         '{"claims":["The synthetic module is shielded."]}',
-        '[{"claim":"The synthetic module is shielded.","verdict":"supported",'
-        '"reason":"The context supports the claim."}]',
+        '{"verdicts":[{"claim":"The synthetic module is shielded.","verdict":"supported",'
+        '"reason":"The context supports the claim."}]}',
     )
     request = EvalRequest(
         question="Is the synthetic module shielded?",

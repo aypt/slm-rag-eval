@@ -51,7 +51,8 @@ class LoopBoundClient:
         text = json.dumps({"claims": [CLAIM]})
         if "Claims to verify" in "\n".join(str(m.get("content", "")) for m in messages):
             text = json.dumps(
-                [{"claim": CLAIM, "verdict": "supported", "reason": "The context agrees."}]
+                {"verdicts": [{"claim": CLAIM, "verdict": "supported",
+                               "reason": "The context agrees."}]}
             )
         return LLMResponse(text=text, usage={"prompt_tokens": 1, "completion_tokens": 1})
 

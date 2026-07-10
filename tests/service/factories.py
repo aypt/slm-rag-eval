@@ -96,7 +96,7 @@ def faithfulness_script(claim: str) -> FakeLLMClient:
     judge = FakeLLMClient()
     judge.push(
         '{"claims":["' + claim + '"]}',
-        '[{"claim":"' + claim + '","verdict":"supported",'
-        '"reason":"The context states the same thing."}]',
+        '{"verdicts":[{"claim":"' + claim + '","verdict":"supported",'
+        '"reason":"The context states the same thing."}]}',
     )
     return judge

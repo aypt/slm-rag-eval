@@ -34,6 +34,7 @@ from slm_rag_eval.bench.run import (
 )
 from slm_rag_eval.core.config import Settings
 from tests.conftest import FakeLLMClient
+from tests.support import claim_list, verdict_batch
 
 FIXTURE_DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -276,8 +277,8 @@ async def _run(tmp_path: Path, samples: list[Any], settings: Settings) -> dict[s
     for sample in samples:
         claim = sample.answer.replace('"', "'")
         judge.push(
-            json.dumps({"claims": [claim]}),
-            json.dumps([{"claim": claim, "verdict": "supported", "reason": "The context agrees."}]),
+            claim_list(claim),
+            verdict_batch(claim),
         )
     return await run_benchmark(
         samples,

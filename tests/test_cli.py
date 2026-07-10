@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from slm_rag_eval import cli
 from slm_rag_eval.core.config import Settings
 from tests.conftest import FakeLLMClient
+from tests.support import verdict_batch
 
 runner = CliRunner()
 
@@ -19,7 +20,7 @@ CLAIM = "The module uses a ceramic shield."
 def _script(judge: FakeLLMClient, verdict: str = "supported") -> FakeLLMClient:
     judge.push(
         json.dumps({"claims": [CLAIM]}),
-        json.dumps([{"claim": CLAIM, "verdict": verdict, "reason": "The context agrees."}]),
+        verdict_batch(CLAIM, verdict=verdict),
     )
     return judge
 
@@ -175,18 +176,20 @@ def test_demo_transcript_matches_the_documented_output(
     scripted_cli.push(
         json.dumps({"claims": claims}),
         json.dumps(
-            [
-                {
-                    "claim": claims[0],
-                    "verdict": "unsupported",
-                    "reason": "The context says 3 instruments.",
-                },
-                {
-                    "claim": claims[1],
-                    "verdict": "supported",
-                    "reason": "The context gives the same year.",
-                },
-            ]
+            {
+                "verdicts": [
+                    {
+                        "claim": claims[0],
+                        "verdict": "unsupported",
+                        "reason": "The context says 3 instruments.",
+                    },
+                    {
+                        "claim": claims[1],
+                        "verdict": "supported",
+                        "reason": "The context gives the same year.",
+                    },
+                ]
+            }
         ),
     )
 

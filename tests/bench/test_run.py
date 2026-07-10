@@ -20,6 +20,7 @@ from slm_rag_eval.bench.run import (
 from slm_rag_eval.core.config import Settings
 from slm_rag_eval.llm.client import LLMResponse
 from tests.conftest import FakeLLMClient
+from tests.support import verdict_batch
 
 FIXTURE_DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -40,9 +41,7 @@ def _script_faithfulness(judge: FakeLLMClient, samples: list[LabeledSample]) -> 
         claim = sample.answer.replace('"', "'")
         judge.push(
             json.dumps({"claims": [claim]}),
-            json.dumps(
-                [{"claim": claim, "verdict": "supported", "reason": "The context agrees."}]
-            ),
+            verdict_batch(claim),
         )
 
 

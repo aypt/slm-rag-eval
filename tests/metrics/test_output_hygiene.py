@@ -18,6 +18,7 @@ from slm_rag_eval.llm.client import LLMResponse
 from slm_rag_eval.llm.errors import JSONGenerationError
 from slm_rag_eval.metrics.faithfulness import score_faithfulness
 from slm_rag_eval.metrics.relevance import score_relevance
+from tests.support import verdict_batch
 
 CLAIM = "The probe carried three instruments."
 CONTEXT = "The probe carried three instruments."
@@ -79,7 +80,7 @@ async def test_claims_keep_their_wording_and_are_only_stripped() -> None:
     padded = f"  {CLAIM}  "
     judge = _scripted(
         json.dumps({"claims": [padded]}),
-        json.dumps([{"claim": CLAIM, "verdict": "supported", "reason": "The context agrees."}]),
+        verdict_batch(CLAIM),
     )
 
     result = await score_faithfulness(_request(), judge)
@@ -109,7 +110,7 @@ async def test_a_blank_verdict_reason_is_rejected() -> None:
     """A verdict with no reason is unauditable: the report cannot show why a claim failed."""
     judge = _scripted(
         json.dumps({"claims": [CLAIM]}),
-        *[json.dumps([{"claim": CLAIM, "verdict": "supported", "reason": "   "}])] * 3,
+        *[verdict_batch(CLAIM, reason="   ")] * 3,
     )
 
     with pytest.raises(JSONGenerationError):

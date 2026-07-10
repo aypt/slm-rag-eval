@@ -7,7 +7,7 @@ from collections import Counter
 from time import perf_counter
 from typing import Any, Literal
 
-from pydantic import BaseModel, RootModel
+from pydantic import BaseModel
 
 from slm_rag_eval.core.schemas import (
     ClaimVerdict,
@@ -47,8 +47,8 @@ _VERIFICATION_INSTRUCTIONS = """Judge whether each claim is supported by the pro
 
 Rules:
 - Use only the provided context. Do not use outside knowledge.
-- Return a JSON array with exactly one item per claim, in the same index order.
-- Each item must contain claim, verdict, and reason.
+- Return only JSON matching {"verdicts": [{"claim": ..., "verdict": ..., "reason": ...}]}.
+- Include exactly one item per claim, in the same index order.
 - Copy the corresponding claim exactly into claim.
 - Use supported only when the context directly entails the whole claim.
 - Use unsupported when the context contradicts the claim or supports a different value.
@@ -77,8 +77,18 @@ class _VerdictItem(BaseModel):
     reason: NonBlankStr
 
 
-class _ClaimVerdicts(RootModel[list[_VerdictItem]]):
-    """Schema wrapper for a batch of index-aligned verdicts."""
+class _ClaimVerdicts(BaseModel):
+    """Batch of index-aligned verdicts, wrapped in an object.
+
+    The wrapper is not decoration. A top-level array is not a valid structured-output root
+    schema, and a backend that enforces that returns HTTP 200 with `content: null` after
+    billing for the tokens it generated — a silent failure that looks like a malformed
+    response. Measured: google/gemma-3-4b-it produced null content for a root array and
+    correct verdicts for this shape, while qwen3-8b happened to tolerate both. Tolerating
+    it is a property of the provider, not of the protocol, so the object is what we send.
+    """
+
+    verdicts: list[_VerdictItem]
 
 
 class _RecordingClient:
@@ -190,7 +200,7 @@ async def _verify_batch(
 ) -> list[ClaimVerdict]:
     messages = _verification_messages(contexts, claims)
     response = await generate_json(client, messages, _ClaimVerdicts)
-    verdicts = response.root
+    verdicts = response.verdicts
 
     problem = _batch_problem(claims, verdicts)
     if problem is not None:
@@ -205,7 +215,7 @@ async def _verify_batch(
                 ),
             },
         ]
-        verdicts = (await generate_json(client, retry_messages, _ClaimVerdicts)).root
+        verdicts = (await generate_json(client, retry_messages, _ClaimVerdicts)).verdicts
         problem = _batch_problem(claims, verdicts)
 
     if problem is not None:

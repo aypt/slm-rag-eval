@@ -26,7 +26,7 @@ async def test_stub_returns_one_uncertain_verdict_per_requested_claim() -> None:
         [{"role": "user", "content": "Claims to verify:\n" + json.dumps(claims)}]
     )
 
-    verdicts = json.loads(response.text)
+    verdicts = json.loads(response.text)["verdicts"]
     assert [verdict["claim"] for verdict in verdicts] == ["First claim.", "Second claim."]
     # A stub must never claim to have verified anything.
     assert {verdict["verdict"] for verdict in verdicts} == {"uncertain"}

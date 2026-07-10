@@ -53,10 +53,16 @@ class OfflineStubJudge:
         payload: Any
         if claims_to_verify is not None:
             # Index-aligned with what was asked, so the batch contract is honored exactly.
-            payload = [
-                {"claim": claim, "verdict": "uncertain", "reason": "offline stub: not verified"}
-                for claim in claims_to_verify
-            ]
+            payload = {
+                "verdicts": [
+                    {
+                        "claim": claim,
+                        "verdict": "uncertain",
+                        "reason": "offline stub: not verified",
+                    }
+                    for claim in claims_to_verify
+                ]
+            }
         elif "questions" in json.dumps(json_schema or {}):
             # Distinct on purpose: the schema rejects repeats, because a judge that returns
             # the same question three times would otherwise average to a perfect score.

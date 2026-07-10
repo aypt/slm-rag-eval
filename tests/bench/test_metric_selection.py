@@ -8,7 +8,6 @@ succeeded and scored nothing at all.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from slm_rag_eval.bench.run import output_paths, run_benchmark
 from slm_rag_eval.core.config import Settings
 from slm_rag_eval.metrics.registry import validate_metric_selection
 from tests.conftest import FakeLLMClient
+from tests.support import claim_list, verdict_batch
 
 runner = CliRunner()
 FIXTURE_DATA = Path(__file__).resolve().parents[1] / "data"
@@ -87,8 +87,8 @@ def test_a_good_selection_still_runs(tmp_path: Path) -> None:
     judge = FakeLLMClient()
     claim = samples[0].answer.replace('"', "'")
     judge.push(
-        json.dumps({"claims": [claim]}),
-        json.dumps([{"claim": claim, "verdict": "supported", "reason": "The context agrees."}]),
+        claim_list(claim),
+        verdict_batch(claim),
     )
 
     import asyncio
