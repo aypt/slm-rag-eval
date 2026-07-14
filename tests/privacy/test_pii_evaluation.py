@@ -115,3 +115,46 @@ def test_the_rendered_report_names_recall_as_the_privacy_number() -> None:
 
     assert "Recall is the privacy-relevant number" in report
     assert "| PERSON |" in report
+
+
+def test_the_corpus_meets_the_plan_that_was_registered_before_it_was_written() -> None:
+    """The plan is a floor set in advance; the corpus is never trimmed to flatter a score.
+
+    This test is what keeps that promise checkable. If a future change drops a category
+    below its floor, that is visible here rather than in a quietly weaker recall number.
+    """
+    from collections import Counter
+
+    from slm_rag_eval.privacy.fixtures import CORPUS_PLAN
+
+    corpus = labeled_corpus()
+    counts = Counter(entity for sample in corpus for _, _, entity in sample.spans)
+    clean = sum(1 for sample in corpus if not sample.spans)
+
+    assert len(corpus) >= CORPUS_PLAN["documents"]
+    assert clean >= CORPUS_PLAN["clean_documents"]
+    for entity, floor in CORPUS_PLAN.items():
+        if entity in {"documents", "clean_documents"}:
+            continue
+        assert counts[entity] >= floor, f"{entity}: {counts[entity]} < planned floor {floor}"
+
+
+def test_every_document_has_a_unique_id() -> None:
+    ids = [sample.id for sample in labeled_corpus()]
+
+    assert len(ids) == len(set(ids))
+
+
+def test_the_corpus_covers_the_positions_detectors_are_known_to_miss() -> None:
+    """Sentence-initial, possessive and parenthetical placement, plus repeated entities."""
+    ids = {sample.id for sample in labeled_corpus()}
+
+    for required in (
+        "person-sentence-initial",
+        "person-possessive",
+        "phone-parenthetical",
+        "repeated-person",
+        "ip-ipv6",
+        "email-plus-tag",
+    ):
+        assert required in ids

@@ -42,7 +42,7 @@ from slm_rag_eval.bench.run import (
 )
 from slm_rag_eval.core.config import Settings, get_settings
 from slm_rag_eval.core.schemas import EvalRequest
-from slm_rag_eval.llm.errors import JSONGenerationError, TruncatedResponseError
+from slm_rag_eval.llm.errors import TruncatedResponseError
 from slm_rag_eval.metrics.registry import evaluate, validate_metric_selection
 
 app = typer.Typer(help=__doc__, add_completion=False)
@@ -312,7 +312,11 @@ async def check_live_round_trip(
                 truncations += 1
                 failures.append(f"{sample.id}: {exc}")
                 continue
-            except (JSONGenerationError, ValueError) as exc:
+            except Exception as exc:
+                # Anything the judge can raise is a probe result, not a crash. A rate limit,
+                # a dropped connection or an auth error all used to escape as a traceback,
+                # which on a rented machine reads as "the tool is broken" rather than "the
+                # endpoint refused us" — and hides the checks that already passed.
                 failures.append(f"{sample.id}: {type(exc).__name__}: {exc}")
                 continue
             latencies.append((perf_counter() - started) * 1000)
