@@ -11,8 +11,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      # Waits for the model pull to finish, not merely for the container to exist. Starting
+      # on service_started meant a job submitted during a multi-gigabyte pull exhausted its
+      # retries against a server that had no model yet, and failed for no visible reason.
+      ollama-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   worker:
@@ -28,8 +31,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   db:
@@ -54,14 +57,9 @@ services:
     ports:
       - "11434:11434"
     restart: unless-stopped
-    # Uncomment to give the judge a GPU (needs the NVIDIA container toolkit on the host).
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # A GPU is granted by docker-compose.gpu.yml rather than here, so this file still comes
+    # up on a host without the NVIDIA container toolkit:
+    #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
   ollama-init:
     image: ollama/ollama

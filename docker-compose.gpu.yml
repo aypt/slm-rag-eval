@@ -1,0 +1,20 @@
+# GPU overlay for the judge container.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Kept separate because a reservation for an `nvidia` driver makes the whole stack fail to
+# start on a host without the NVIDIA container toolkit. The base file therefore stays
+# runnable everywhere, and this overlay is applied only where a GPU exists.
+#
+# Without it, Ollama in the container runs on CPU. It still answers, so nothing looks broken
+# — the run is simply an order of magnitude slower, which on rented hardware is the more
+# expensive kind of silent failure.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

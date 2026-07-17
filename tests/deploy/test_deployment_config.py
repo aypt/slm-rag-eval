@@ -93,12 +93,34 @@ def test_ollama_init_pulls_the_configured_judge_model() -> None:
     assert _service("ollama")["volumes"] == ["ollama:/root/.ollama"]
 
 
-def test_gpu_reservation_block_is_present_but_commented_out() -> None:
-    compose_text = (REPO_ROOT / "docker-compose.yml").read_text()
-
-    assert "# deploy:" in compose_text
-    assert "#           capabilities: [gpu]" in compose_text
+def test_the_base_stack_requests_no_gpu_so_it_starts_on_any_host() -> None:
+    """A reservation for an nvidia driver stops the whole stack on a host without one."""
     assert _service("ollama").get("deploy") is None
+
+
+def test_the_gpu_overlay_grants_the_judge_a_gpu_and_nothing_else() -> None:
+    """A commented-out block only works if someone remembers to uncomment it.
+
+    The overlay is applied with `-f docker-compose.yml -f docker-compose.gpu.yml`, which is
+    a flag the runbook can carry and a file this test can check. Without a GPU the judge
+    still answers, just far slower — a silent failure that is expensive on rented hardware,
+    so it is worth making declarative.
+    """
+    import yaml
+
+    overlay = yaml.safe_load((REPO_ROOT / "docker-compose.gpu.yml").read_text())
+
+    assert set(overlay["services"]) == {"ollama"}, "the overlay must not touch other services"
+    devices = overlay["services"]["ollama"]["deploy"]["resources"]["reservations"]["devices"]
+    assert devices[0]["driver"] == "nvidia"
+    assert "gpu" in devices[0]["capabilities"]
+
+
+def test_the_api_and_worker_wait_for_the_model_pull_to_finish() -> None:
+    """Depending on `ollama` alone let a job be submitted mid-pull, which fails obscurely."""
+    for name in ("api", "worker"):
+        depends = _service(name)["depends_on"]
+        assert depends["ollama-init"]["condition"] == "service_completed_successfully", name
 
 
 def test_dockerfile_is_multi_stage_slim_non_root_and_healthchecked() -> None:
