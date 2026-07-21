@@ -36,6 +36,7 @@ import typer
 from slm_rag_eval.bench import environment as environment_module
 from slm_rag_eval.bench.analyze import CostModel, analyze
 from slm_rag_eval.bench.datasets import describe, load, render_stats
+from slm_rag_eval.bench.resources import ResourceSampler, ResourceUsage, ollama_resident_models
 from slm_rag_eval.bench.run import apply_privacy_mode, build_judge, output_paths, run_benchmark
 from slm_rag_eval.core.config import Settings, get_settings
 
@@ -54,6 +55,9 @@ class Leg:
     detail: str = ""
     seconds: float = 0.0
     manifest: dict[str, Any] = field(default_factory=dict)
+    usage: ResourceUsage = field(default_factory=ResourceUsage)
+    """Peak VRAM and memory while this leg ran — report R4, measured not remembered."""
+    resident: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _settings_for(model: str, privacy_mode: str) -> Settings:
@@ -81,17 +85,21 @@ async def run_leg(
         return leg
 
     try:
-        leg.manifest = await run_benchmark(
-            samples,
-            judge=client,
-            dataset=dataset,
-            judge_name=leg.judge,
-            model=judge_settings.model,
-            out_dir=out_dir,
-            settings=judge_settings,
-            metrics=metrics,
-            sampling=sampling,
-        )
+        with ResourceSampler() as sampler:
+            leg.manifest = await run_benchmark(
+                samples,
+                judge=client,
+                dataset=dataset,
+                judge_name=leg.judge,
+                model=judge_settings.model,
+                out_dir=out_dir,
+                settings=judge_settings,
+                metrics=metrics,
+                sampling=sampling,
+            )
+            # Read while the model is still loaded; after the run it has been evicted.
+            leg.resident = ollama_resident_models(judge_settings.base_url)
+        leg.usage = sampler.usage
         written = leg.manifest.get("samples_written", 0)
         failures = leg.manifest.get("failure_count", 0)
         leg.status = "ok" if failures == 0 else "partial"
@@ -144,11 +152,40 @@ def render_plan(legs: list[Leg]) -> str:
 
 def render_run_log(legs: list[Leg]) -> str:
     """What actually happened, including the legs that did not finish."""
-    lines = ["| Leg | Status | Detail | Minutes |", "|---|---|---|---|"]
-    lines += [
-        f"| {leg.name} | {leg.status} | {leg.detail} | {leg.seconds / 60:.1f} |" for leg in legs
+    lines = [
+        "| Leg | Status | Detail | Minutes | Peak VRAM | Peak system RAM |",
+        "|---|---|---|---|---|---|",
     ]
+    for leg in legs:
+        vram = (
+            max(leg.usage.peak_gpu_memory_mib.values(), default=0)
+            if leg.usage.peak_gpu_memory_mib
+            else 0
+        )
+        vram_text = f"{vram} MiB" if vram else "no GPU"
+        ram = f"{leg.usage.peak_system_used_mib} MiB" if leg.usage.peak_system_used_mib else "n/a"
+        lines.append(
+            f"| {leg.name} | {leg.status} | {leg.detail} | {leg.seconds / 60:.1f} | "
+            f"{vram_text} | {ram} |"
+        )
     return "\n".join(lines)
+
+
+def write_resource_report(legs: list[Leg], out: Path) -> Path:
+    """Report R4: what each judge actually needed from the hardware."""
+    payload = {
+        leg.name: {
+            "model": leg.model,
+            "privacy_mode": leg.privacy_mode,
+            "seconds": leg.seconds,
+            "resident_models": leg.resident,
+            **leg.usage.as_dict(),
+        }
+        for leg in legs
+    }
+    path = out / "resources.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
 
 
 @app.command()
@@ -176,6 +213,14 @@ def main(
     metric: Annotated[list[str] | None, typer.Option(help="Repeatable.")] = None,
     out: Annotated[Path, typer.Option(help="Report directory.")] = Path("report/experiment"),
     data_dir: Annotated[Path | None, typer.Option(help="Dataset cache directory.")] = None,
+    include_rows: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--include-rows",
+            help="Existing rows JSONL to fold into the analysis; repeat. Used to bring a "
+            "cloud baseline scored elsewhere into a run that only scores local models.",
+        ),
+    ] = None,
     cloud_input_cost_per_1m: Annotated[float, typer.Option()] = 0.0,
     cloud_output_cost_per_1m: Annotated[float, typer.Option()] = 0.0,
     dry_run: Annotated[
@@ -232,7 +277,18 @@ def main(
         if leg.status in {"ok", "partial"}
     ]
     rows_files = [path for path in rows_files if path.exists()]
+
+    # Rows scored elsewhere join the analysis as their own series. A cloud judge costs the
+    # same per token wherever it runs, and waiting on a remote API burns rented GPU hours
+    # doing nothing, so it is worth scoring before the machine is hired.
+    for extra in include_rows or []:
+        if not extra.exists():
+            raise typer.BadParameter(f"--include-rows {extra} does not exist")
+        rows_files.append(extra)
+        typer.echo(f"including external rows: {extra}")
+
     (out / "run_log.md").write_text(render_run_log(legs) + "\n", encoding="utf-8")
+    write_resource_report(legs, out)
 
     if not rows_files:
         typer.echo("no judge produced rows; nothing to analyze.", err=True)
