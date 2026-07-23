@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
 from slm_rag_eval.llm.client import LLMResponse
+
+_APP_ENV_PREFIXES = ("SLMEVAL_", "CLOUD_")
+_APP_ENV_NAMES = ("DATABASE_URL", "WORKER_EMBEDDED", "WORKER_CONCURRENCY")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Hide the operator's `SLMEVAL_*` variables from every test.
+
+    `Settings(_env_file=None)` suppresses the `.env` file but not the process environment,
+    so a shell that exports `SLMEVAL_PRIVACY_MODE=off` — exactly what the experiment runbook
+    tells an operator to do — made tests asserting on defaults fail. A suite whose result
+    depends on the caller's shell cannot be a gate, and `make check` is the first gate the
+    campaign runs on the rented machine.
+    """
+    import os
+
+    for name in list(os.environ):
+        if name.startswith(_APP_ENV_PREFIXES) or name in _APP_ENV_NAMES:
+            monkeypatch.delenv(name, raising=False)
+    yield
 
 
 @dataclass

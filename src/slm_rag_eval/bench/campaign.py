@@ -70,6 +70,20 @@ class Campaign:
         return "\n".join(lines)
 
 
+def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a subcommand, with this interpreter's directory first on PATH.
+
+    `make check` runs bare `pytest`, `ruff` and `mypy`, which resolve from PATH. Without
+    this, a campaign started as `.venv/bin/python -m ...` from an unactivated shell would
+    check the system interpreter instead of the one the experiment runs on — and report a
+    failure that has nothing to do with the code.
+    """
+    env = {**os.environ, **(extra or {})}
+    bin_dir = str(Path(sys.executable).parent)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
 def _run(
     command: list[str], timeout_s: float = 3600.0, env: dict[str, str] | None = None
 ) -> tuple[bool, str]:
@@ -80,7 +94,7 @@ def _run(
             capture_output=True,
             text=True,
             timeout=timeout_s,
-            env={**os.environ, **(env or {})},
+            env=_child_env(env),
         )
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout_s:.0f}s"
