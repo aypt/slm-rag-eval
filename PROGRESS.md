@@ -615,3 +615,78 @@ measure it". It reports `n/a`, and the summary says explicitly that `n/a` is not
 
 Docker Compose startup evidence (Q4), peak VRAM/RAM (R4), and the candidate-SLM
 specification table, whose parameter counts and quantization come from model cards.
+
+## P2 — verified against live models, and made unattended (2026-08-07)
+
+Third human-directed work order: pre-test the intended judge models on OpenRouter, run the
+cloud baselines locally, and automate everything else so the rented machine runs one command.
+
+Verified: ruff clean, mypy clean (40 source files), **pytest 271 passed** (was 238), and the
+whole rental-day command rehearsed end to end against a stub judge — every gate fired, every
+required artifact produced, `MANIFEST.sha256` verified.
+
+### Two defects that only a live model could find
+
+Both were in our code, both would have wasted rented time, and neither is visible to a fake
+client:
+
+1. **A top-level array is not a valid structured-output root schema.** Verdict batches used
+   one. `google/gemma-3-4b-it` answered HTTP 200 with `content: null` *after billing for the
+   270 tokens it generated*, which surfaced as "malformed response body" and looked like a
+   broken model. `qwen3-8b` happened to tolerate it. Tolerating a root array is a property
+   of the provider, not of the protocol, so the batch is now object-wrapped and both models
+   work. Seven test files were hand-building that shape; it moved to `tests/support.py`.
+2. **Qwen3 is a hybrid-reasoning model and thinks by default.** Measured with our own
+   extraction prompt: 339 completion tokens and 5.6 s per call, versus 47 tokens and 1.7 s
+   with thinking off, for identical claims. `SLMEVAL_DISABLE_THINKING` applies the directive
+   at the prompt, not as a request parameter — OpenRouter's `reasoning.enabled=false` works
+   there but does not exist on a local Ollama, and the run must behave the same on both.
+   `reasoning.exclude=true` is a trap: it hides the trace and still bills for it.
+
+### Two more found by rehearsing rather than reasoning
+
+3. **The test suite was not hermetic.** `Settings(_env_file=None)` suppresses the `.env` file
+   but not the process environment, so `make check` failed with the experiment's `SLMEVAL_*`
+   variables exported — exactly the state the runbook puts an operator in, and the campaign's
+   first gate. An autouse fixture now hides them.
+4. **The campaign checked the wrong interpreter.** `make check` runs bare `pytest`; started
+   from an unactivated shell it resolved the system Python. The campaign now puts its own
+   interpreter's directory first on a child's PATH.
+
+Also fixed: preflight crashed with a traceback on an OpenRouter 429 instead of recording a
+probe failure.
+
+### Model selection, verified against the live catalogue
+
+The previously planned set was a generation behind. Confirmed present in Ollama's library
+and pre-tested where possible:
+
+| Model | Pre-test | Result |
+|---|---|---|
+| `qwen3:8b` | `qwen/qwen3-8b` | 3/3 scored, 18 s/sample, 5,396 tokens/sample |
+| `gemma3:4b` | `google/gemma-3-4b-it` | Works after the schema fix, but **fails verdict alignment on some samples** — it will not echo claims verbatim |
+| `qwen3:4b-instruct` | not on OpenRouter | Same family and chat template as the 8B; gated by preflight on the rented host |
+
+The gemma alignment failures are recorded as a risk in the runbook. The response is to report
+its coverage honestly, not to relax the alignment check — that check exists because a
+misattributed verdict is a wrong evaluation that looks fine.
+
+### PII corpus at the registered plan
+
+16 documents / 21 spans became 73 / 89 against `CORPUS_PLAN`, written before the corpus and
+enforced as a floor by a test. Measured once and reported as it came out: **precision 0.988,
+recall 0.944**. Five genuine misses, including both unformatted SSN variants, which drags
+US_SSN recall to 0.667 — per-category variation worth discussing rather than smoothing away.
+
+### Now automated that previously said "manual"
+
+Peak VRAM and system RAM per leg, `ollama ps` residency, model digest and quantization,
+Compose deployment with a staged transcript, `make check` output, dataset identity, and the
+bundle index. The only things left to a human are the GPU hourly rate and supervisor sign-off.
+
+### Cloud baselines run locally, on purpose
+
+`gpt-5-mini` and `claude-haiku-4.5` over the same 150 samples, scored here and carried to the
+rented host via `--include-rows`. A cloud judge costs the same per token wherever the request
+originates and answers in roughly 90 s per sample; running it on the rental would spend close
+to four GPU-hours waiting on a network call.
