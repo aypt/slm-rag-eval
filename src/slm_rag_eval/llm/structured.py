@@ -13,6 +13,35 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 _MAX_ATTEMPTS = 3
 
 
+def closed_json_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """The model's JSON schema with every object closed to extra properties.
+
+    OpenAI's structured-output validation requires `additionalProperties: false` on every
+    object in the schema, including ones reached through `$defs`. Pydantic does not emit it,
+    so a request built straight from `model_json_schema()` is rejected with HTTP 400 and the
+    message "'additionalProperties' is required to be supplied and to be false".
+
+    Measured: `openai/gpt-5-mini` refused our verdict schema on every one of 150 samples,
+    while `anthropic/claude-haiku-4.5` accepted the identical request. Whether a provider
+    enforces the rule is not something the pipeline should depend on, and closing the objects
+    is what the specification asks for regardless — it only states that the model must not
+    invent keys, which is already true of every response we accept.
+    """
+    return _close_objects(schema.model_json_schema())
+
+
+def _close_objects(node: Any) -> Any:
+    """Recursively add `additionalProperties: false` to every object node."""
+    if isinstance(node, dict):
+        closed = {key: _close_objects(value) for key, value in node.items()}
+        if closed.get("type") == "object" and "additionalProperties" not in closed:
+            closed["additionalProperties"] = False
+        return closed
+    if isinstance(node, list):
+        return [_close_objects(item) for item in node]
+    return node
+
+
 def _strip_markdown_fence(text: str) -> str:
     stripped = text.strip()
     if not stripped.startswith("```"):
@@ -34,7 +63,7 @@ async def generate_json(
 ) -> ModelT:
     """Generate and validate JSON, asking the model to repair invalid responses."""
     conversation = [dict(message) for message in messages]
-    json_schema = schema.model_json_schema()
+    json_schema = closed_json_schema(schema)
     last_raw_text = ""
     last_error = "No response was generated"
 

@@ -72,6 +72,27 @@ def apply_thinking_directive(messages: list[dict[str, Any]]) -> list[dict[str, A
     return messages
 
 
+def _raise_for_status_with_body(response: httpx.Response) -> None:
+    """`raise_for_status`, but with the provider's explanation in the message.
+
+    httpx reports only "Client error '400 Bad Request' for url …", while the body almost
+    always says exactly what was wrong — a rejected schema, an unsupported parameter, an
+    exhausted quota. Without it a 150-sample run fails 149 times and leaves a manifest of
+    identical, uninformative errors, and finding the cause costs a separate investigation.
+    """
+    if response.is_success:
+        return
+    try:
+        detail = response.text.strip()[:600]
+    except (UnicodeDecodeError, httpx.ResponseNotRead):
+        detail = ""
+    message = (
+        f"{response.status_code} {response.reason_phrase} from {response.request.url}"
+        + (f": {detail}" if detail else "")
+    )
+    raise httpx.HTTPStatusError(message, request=response.request, response=response)
+
+
 def _is_retryable_transport_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TimeoutException):
         return True
@@ -140,7 +161,7 @@ class OpenAICompatClient:
                     headers=headers,
                     timeout=self._settings.timeout_s,
                 )
-                response.raise_for_status()
+                _raise_for_status_with_body(response)
 
         if response is None:  # Defensive: AsyncRetrying always makes at least one attempt.
             raise RuntimeError("The completion request was not attempted")
