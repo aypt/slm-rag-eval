@@ -26,6 +26,39 @@ before it is released. Everything else is a means to that end.
 
 ---
 
+## 0b. If you are driving the machine remotely
+
+You may be running on the author's machine rather than on the GPU host, creating and
+controlling a RunPod instance through the Runpod agent skills. Everything in this runbook
+still applies; only three things change.
+
+**Run the campaign detached and poll it.** It takes 4–6 hours, which is longer than an
+interactive session should hold an SSH connection open:
+
+```bash
+ssh <pod> 'cd slm-rag-eval && nohup python -m slm_rag_eval.bench.campaign ... \
+  > campaign-console.log 2>&1 &'
+```
+
+Then poll `campaign_log.md` and `campaign-console.log`; both are written as it goes, so
+progress is visible without keeping a connection.
+
+**The pod bills until it is stopped, including while nothing is running.** This is the one
+failure mode that costs real money for no result. Before creating the pod, note the hourly
+rate and decide a ceiling. After the bundle is confirmed on the destination, stop the pod in
+the same turn — do not leave it for later, and do not assume a finished conversation stops
+it.
+
+**Copy the bundle back before stopping.** Verify it on the destination, not on the pod:
+
+```bash
+tar tzf report/experiment.tar.gz | wc -l    # on the destination, must be non-zero
+```
+
+A pod that is stopped with the only copy of the rows on it has wasted the entire rental.
+
+---
+
 ## 1. What arrives with you
 
 The project folder is copied onto this host (there is no GitHub remote). It must contain:
@@ -137,11 +170,40 @@ the machine expire mid-run.
 **A model that fails preflight is a result.** Record it, drop that model from the matrix,
 and run the remaining models. Do not substitute a different model without saying so.
 
-> Known risk, already measured: `gemma3:4b` — on an OpenRouter-served copy of this model,
-> some samples failed the verdict-alignment check because the model would not echo claims
-> verbatim. Ollama's copy may differ. If its coverage is poor, report the coverage honestly
-> rather than adjusting the alignment check, and note `phi4-mini:3.8b` as the documented
-> alternative if a third model is needed.
+### Measured coverage before you started
+
+Twelve real RAGTruth samples per model, through OpenRouter, on this exact pipeline:
+
+| Model probed | Scored | Alignment failures | Median latency |
+|---|---|---|---|
+| `ibm-granite/granite-4.1-8b` | 12/12 (100%) | 0 | 10.4 s |
+| `qwen/qwen3-8b` | 11/12 (92%) | 1 | 12.3 s |
+| `google/gemma-3-4b-it` | 9/12 (75%) | 1 (plus 1 truncation, 1 rate limit) | 10.9 s |
+| `meta-llama/llama-3.2-3b-instruct` | 8/12 (67%) | 4 | 2.8 s |
+
+Read these as **relative**, not absolute. OpenRouter serves higher-precision weights than
+Ollama's Q4_K_M, so local coverage is likely equal or lower for every model. The rate limit
+is an OpenRouter artifact and will not occur locally.
+
+The pattern that matters: **alignment failures fall as model size rises** — 4 at 3B, 1 at 4B,
+0–1 at 8B. Echoing a claim verbatim is an instruction-following task, so the smaller the
+model the more often it fails, independently of whether its judgement was right. Expect some
+alignment loss from `qwen3:4b-instruct` and `gemma3:4b`, and report it as coverage.
+
+`ibm-granite/granite-4.1-8b` scored best but is **not** a usable substitute: Ollama's
+`granite4` library carries no matching dense 8B tag, and is version 4.0 rather than 4.1.
+
+> If `gemma3:4b` coverage is poor here, report it honestly rather than adjusting the
+> alignment check — that check exists because a misattributed verdict is a wrong evaluation
+> that looks correct. Drop the model from the matrix and say so, or substitute only with a
+> model you have preflighted on this host and named in the report.
+
+### Truncation is a finding, not a setting to tune away
+
+`gemma3:4b` hit the 8,192-token budget on one of twelve samples while the other models used
+roughly 5,000. **Do not raise the budget for one model.** All judges share one budget so
+their coverage is comparable; a model that cannot fit its answer in it is telling you
+something worth reporting.
 
 ---
 
