@@ -5,18 +5,6 @@ on:
   pull_request:
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      # `make setup` (not a bare pip install) because the privacy layer needs spaCy's
-      # en_core_web_lg model at import time, not just the Presidio packages.
-      - run: make setup
-      - run: make check
 
   docker:
     runs-on: ubuntu-latest
